@@ -1,7 +1,9 @@
-{# Usage: {% include "partials/_status_badge.html" with status=lease.status label=lease.status_display %} #}
-{% if status == "awaiting_deposit" %}<span class="badge badge--warning">{{ label|default:"Awaiting deposit" }}</span>
-{% elif status == "active" %}<span class="badge badge--info">{{ label|default:"Active" }}</span>
-{% elif status == "voting" %}<span class="badge badge--warning">{{ label|default:"Voting" }}</span>
-{% elif status == "released_tenant" %}<span class="badge badge--success">{{ label|default:"Returned to tenant" }}</span>
-{% elif status == "released_owner" %}<span class="badge badge--danger">{{ label|default:"Released to owner" }}</span>
+{# Usage: {% include "partials/_status_badge.html" with status=lease.status %}. Pages rendered by JS use ui.js statusBadge() with the same mapping. #}
+{% if status == "DRAFT" %}<span class="badge badge--warning">Being set up</span>
+{% elif status == "SETTLEMENT_READY" %}<span class="badge badge--warning">Ready to lock</span>
+{% elif status == "ACTIVE" %}<span class="badge badge--info">Locked</span>
+{% elif status == "IN_SETTLEMENT" %}<span class="badge badge--warning">In settlement</span>
+{% elif status == "RETURNED" %}<span class="badge badge--success">Returned to tenant</span>
+{% elif status == "SETTLED" %}<span class="badge badge--success">Settled</span>
+{% elif status == "FAILED" %}<span class="badge badge--danger">Failed</span>
 {% else %}<span class="badge">{{ label|default:status }}</span>{% endif %}

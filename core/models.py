@@ -87,6 +87,8 @@ class Lease(models.Model):
     arbiter = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_arbiter")
     currency = models.ForeignKey(Currency, on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=20, decimal_places=6)
+    title = models.CharField(max_length=120, blank=True, help_text="A label such as the property name. Never sent to the ledger.")
+    scenario = models.CharField(max_length=1, blank=True, help_text="A, B or C for leases staged by demo_scenarios.")
     end_at = models.DateTimeField()
     grace_minutes = models.PositiveIntegerField(default=1)
     cancel_after = models.DateTimeField(help_text="end_at + grace: from then on the deposit returns to the tenant.")

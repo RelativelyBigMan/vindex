@@ -1,87 +1,102 @@
 {% extends "base.html" %}
+{% load static %}
 
-{% block title %}New escrow{% endblock %}
+{% block title %}New deposit{% endblock %}
 
 {% block content %}
 <div class="page-header">
-  <h1>Create an escrow</h1>
-  <p>Fill in the lease and the three parties. Nothing is sent to the ledger until the tenant makes the deposit from their wallet.</p>
+  <h1>Protect a deposit</h1>
+  <p>Name the three parties and the amount. The deposit is only locked when the tenant signs, in the last step.</p>
 </div>
 
-{# Field names match a future Django form (forms.LeaseForm). Browser validation is for convenience only; Django must re-validate everything. #}
-<form class="form card" method="post" action="{% url 'escrow:lease_create' %}" novalidate>
-  {% csrf_token %}
-  {% if form.non_field_errors %}<div class="alert alert--error">{{ form.non_field_errors }}</div>{% endif %}
+<p class="alert alert--warning" data-not-tenant hidden>
+  Only a tenant can start a deposit. <button type="button" class="btn btn--ghost btn--sm" data-become-tenant hidden>Act as the tenant</button>
+</p>
 
+{# The server re-validates every field (Decimal amounts, address format, three different accounts, dates). #}
+<form class="form card" data-lease-form novalidate>
   <fieldset class="form">
     <legend>Lease</legend>
     <div class="field">
-      <label for="id_property_name">Property name</label>
-      <input id="id_property_name" name="property_name" type="text" required maxlength="120"
-             value="{{ form.property_name.value|default_if_none:'' }}"
-             {% if form.property_name.errors %}aria-invalid="true"{% endif %}>
-      {{ form.property_name.errors }}
-    </div>
-    <div class="field">
-      <label for="id_property_address">Property address</label>
-      <textarea id="id_property_address" name="property_address" required maxlength="500" aria-describedby="addr-help">{{ form.property_address.value|default_if_none:'' }}</textarea>
-      <small id="addr-help">Stored privately by safeDeposit and never written to the blockchain.</small>
-      {{ form.property_address.errors }}
+      <label for="id_title">Property name</label>
+      <input id="id_title" name="title" type="text" maxlength="120" autocomplete="off" aria-describedby="title-help" placeholder="Via Sparano 12, flat 3">
+      <small id="title-help">Optional. Stored privately by safeDeposit and never written to the ledger.</small>
     </div>
     <div class="grid grid--2">
       <div class="field">
-        <label for="id_start_date">Lease start</label>
-        <input id="id_start_date" name="start_date" type="date" required value="{{ form.start_date.value|default_if_none:''|stringformat:'s' }}">
-        {{ form.start_date.errors }}
+        <label for="id_amount">Deposit</label>
+        <input id="id_amount" name="amount" type="text" inputmode="decimal" autocomplete="off" required data-amount value="1000" aria-describedby="amount-help">
+        <small id="amount-help">In a test token, so the value stays steady during the lease.</small>
       </div>
       <div class="field">
-        <label for="id_end_date">Lease end</label>
-        <input id="id_end_date" name="end_date" type="date" required value="{{ form.end_date.value|default_if_none:''|stringformat:'s' }}">
-        {{ form.end_date.errors }}
+        <label for="id_currency">Currency</label>
+        <select id="id_currency" name="currency" required>
+          {% for currency in escrow_config.currencies %}<option value="{{ currency.code }}">{{ currency.label }}</option>{% endfor %}
+        </select>
       </div>
     </div>
+
     <div class="field">
-      <label for="id_deposit_amount">Deposit ({{ escrow_config.currency.code|default:"USD" }})</label>
-      <input id="id_deposit_amount" name="deposit_amount" type="text" inputmode="decimal" autocomplete="off" required data-amount
-             value="{{ form.deposit_amount.value|default_if_none:'' }}" aria-describedby="amount-help">
-      <small id="amount-help">Paid in {{ escrow_config.currency.code|default:"a stablecoin" }} so the value stays steady during the lease.</small>
-      {{ form.deposit_amount.errors }}
+      <span class="label" id="end-label">Lease end</span>
+      <div class="segmented" role="radiogroup" aria-labelledby="end-label">
+        <label><input type="radio" name="end_mode" value="minutes" checked><span>In a few minutes (demo)</span></label>
+        <label><input type="radio" name="end_mode" value="date"><span>On a date</span></label>
+      </div>
+    </div>
+    <div class="grid grid--2">
+      <div class="field" data-end-minutes>
+        <label for="id_end_in_minutes">Ends in (minutes)</label>
+        <input id="id_end_in_minutes" name="end_in_minutes" type="number" min="1" max="525600" step="1" value="3" required>
+      </div>
+      <div class="field" data-end-date hidden>
+        <label for="id_end_date">Ends on</label>
+        <input id="id_end_date" name="end_date" type="date">
+      </div>
+      <div class="field">
+        <label for="id_grace_minutes">Grace period (minutes)</label>
+        <input id="id_grace_minutes" name="grace_minutes" type="number" min="0" max="525600" step="1" value="1" required aria-describedby="grace-help">
+        <small id="grace-help">Time after the lease end in which a damage claim is still possible. Then the deposit returns automatically.</small>
+      </div>
     </div>
   </fieldset>
 
   <fieldset class="form">
     <legend>Parties</legend>
-    <p class="small muted">Use public wallet addresses only. Never enter a seed phrase, secret or private key.</p>
+    <p class="small muted">The tenant is whoever you are acting as: <strong data-tenant-name>…</strong>. Use public addresses only. Never enter a seed phrase, secret or private key.</p>
     <div class="field">
-      <label for="id_tenant_address">Tenant wallet address</label>
-      <input id="id_tenant_address" class="mono" name="tenant_address" type="text" required maxlength="128" autocomplete="off" spellcheck="false"
-             value="{{ form.tenant_address.value|default_if_none:'' }}">
-      {{ form.tenant_address.errors }}
+      <label for="id_landlord">Landlord</label>
+      <select id="id_landlord" name="landlord" required data-party-select="landlord"></select>
+      <input class="mono" name="landlord_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
+             aria-label="Landlord's XRP Ledger address" placeholder="r…">
+      <small data-paste-note="landlord" hidden>A pasted address can receive its share and counts as a signer on the ledger, but in this demo it can't approve splits from this site.</small>
     </div>
     <div class="field">
-      <label for="id_owner_address">Owner wallet address</label>
-      <input id="id_owner_address" class="mono" name="owner_address" type="text" required maxlength="128" autocomplete="off" spellcheck="false"
-             value="{{ form.owner_address.value|default_if_none:'' }}">
-      {{ form.owner_address.errors }}
-    </div>
-    <div class="field">
-      <label for="id_arbiter_address">Arbiter wallet address</label>
-      <input id="id_arbiter_address" class="mono" name="arbiter_address" type="text" required maxlength="128" autocomplete="off" spellcheck="false"
-             value="{{ form.arbiter_address.value|default_if_none:'' }}" aria-describedby="arbiter-help">
-      <small id="arbiter-help">An independent person or service that both tenant and owner agree to. All three addresses must be different.</small>
-      {{ form.arbiter_address.errors }}
+      <label for="id_arbiter">Arbiter</label>
+      <select id="id_arbiter" name="arbiter" required data-party-select="arbiter" aria-describedby="arbiter-help"></select>
+      <input class="mono" name="arbiter_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
+             aria-label="Arbiter's XRP Ledger address" placeholder="r…">
+      <small id="arbiter-help">Independent of both sides. Listed arbiters hold a verified-arbiter credential on the ledger.</small>
+      <p class="alert alert--warning" data-arbiter-warning hidden></p>
     </div>
   </fieldset>
 
   <label class="checkbox">
-    <input type="checkbox" name="accept_terms" required {% if form.accept_terms.value %}checked{% endif %}>
+    <input type="checkbox" name="accept_terms" required>
     <span class="small">I agree to the <a href="{% url 'legal:terms' %}">Terms</a> and have read the <a href="{% url 'legal:privacy' %}">Privacy notice</a>. I understand that ledger transactions can't be reversed.</span>
   </label>
-  {{ form.accept_terms.errors }}
 
   <div class="row">
-    <button type="submit" class="btn btn--primary">Create escrow</button>
+    <button type="submit" class="btn btn--primary" data-submit>Create settlement account</button>
     <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">Cancel</a>
   </div>
 </form>
+
+{# Shown after the form is sent: the live setup checklist, then the lock step. #}
+<section class="card" data-setup hidden aria-live="polite">
+  <h2 class="card__title">Setting up on the ledger</h2>
+  <p class="muted" data-setup-intro>A fresh settlement account is being created for this lease. Each step is a real transaction.</p>
+  <div class="mt-4" data-setup-body></div>
+</section>
 {% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/create.js' %}"></script>{% endblock %}

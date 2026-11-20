@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Page not found{% endblock %}
+{% block content %}
+<div class="card empty">
+  <h1>404</h1>
+  <p>That page doesn't exist. A lease link may be mistyped, or the lease may have been removed.</p>
+  <a class="btn btn--primary" href="{% url 'home' %}">Back to the start</a>
+</div>
+{% endblock %}

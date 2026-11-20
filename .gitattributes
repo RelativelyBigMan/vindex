@@ -1,0 +1,4 @@
+# Vendored browser builds are checked against a pinned SHA-256 (scripts/fetch_vendor.py):
+# git must never rewrite their line endings on Windows.
+static/vendor/*.js -text
+*.woff2 binary

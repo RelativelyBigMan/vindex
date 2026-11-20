@@ -1,131 +1,103 @@
 {% extends "base.html" %}
+{% load static %}
 
-{% block title %}{{ lease.property_name }}{% endblock %}
+{% block title %}Deposit{% endblock %}
 
 {% block content %}
-<div class="page-header row row--between">
-  <div>
-    <p class="small mt-0"><a href="{% url 'escrow:dashboard' %}">← My leases</a></p>
-    <h1>{{ lease.property_name }}</h1>
-    <p>
-      <time datetime="{{ lease.start_date|date:'Y-m-d' }}">{{ lease.start_date|date:"j M Y" }}</time>
-      to <time datetime="{{ lease.end_date|date:'Y-m-d' }}">{{ lease.end_date|date:"j M Y" }}</time>
-    </p>
+<div data-lease-page data-lease-id="{{ lease_id }}">
+  <div class="page-header row row--between">
+    <div>
+      <p class="small mt-0"><a href="{% url 'escrow:dashboard' %}">← My leases</a></p>
+      <h1 data-title><span class="skeleton"></span></h1>
+      <p data-subtitle></p>
+    </div>
+    <span data-status></span>
   </div>
-  {% include "partials/_status_badge.html" with status=lease.status label=lease.status_display %}
+
+  <p class="alert alert--warning" data-offline hidden>Connection lost. Showing the last known state; retrying…</p>
+
+  <div class="card empty" data-forbidden hidden>
+    <p data-forbidden-text>This deposit isn't visible to the persona you are acting as.</p>
+    <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">My leases</a>
+  </div>
+
+  <div data-content hidden>
+    <div data-outcome></div>
+
+    <section aria-labelledby="parties-heading">
+      <h2 id="parties-heading" class="visually-hidden">Parties</h2>
+      <div class="grid grid--3" data-parties></div>
+    </section>
+
+    <section class="card mt-8" data-setup hidden aria-live="polite">
+      <h2 class="card__title">Setting up on the ledger</h2>
+      <div data-setup-body></div>
+    </section>
+
+    <div class="grid grid--2 mt-8" data-ledger-cards>
+      <section class="card" aria-labelledby="deposit-heading">
+        <div class="row row--between"><h2 id="deposit-heading" class="card__title">Deposit escrow</h2><span data-escrow-state></span></div>
+        <p class="amount" data-amount></p>
+        <div class="mt-4" data-countdown-box hidden>
+          <p class="countdown__label" data-countdown-label>Automatic return in</p>
+          <p class="countdown" data-countdown role="timer" aria-live="off">--:--</p>
+        </div>
+        <dl class="details mt-4" data-escrow-details></dl>
+      </section>
+
+      <section class="card" aria-labelledby="settlement-heading">
+        <div class="row row--between"><h2 id="settlement-heading" class="card__title">Settlement account</h2><span class="live-tag" data-live-tag hidden>read live from the ledger</span></div>
+        <div data-settlement><span class="skeleton"></span><span class="skeleton"></span></div>
+      </section>
+    </div>
+
+    <section class="card mt-8" data-actions-card hidden aria-labelledby="actions-heading">
+      <h2 id="actions-heading" class="card__title">What you can do</h2>
+      <div data-actions></div>
+    </section>
+
+    <section class="mt-8" data-proposals-section hidden aria-labelledby="proposals-heading">
+      <h2 id="proposals-heading">Proposed split</h2>
+      <div class="stack mt-4" data-proposals></div>
+    </section>
+
+    <section class="mt-8" data-evidence-section hidden aria-labelledby="evidence-heading">
+      <h2 id="evidence-heading">Evidence</h2>
+      <p class="muted">Photos stay private to the three parties. Only each photo's fingerprint (SHA-256) is written to the ledger, so nobody can swap a photo later without it showing.</p>
+      <form class="card form mt-4" data-evidence-form hidden>
+        <div class="grid grid--2">
+          <div class="field">
+            <label for="id_evidence_kind">What does the photo show?</label>
+            <select id="id_evidence_kind" name="kind">
+              <option value="move_in">Move-in condition</option>
+              <option value="move_out">Move-out condition</option>
+              <option value="damage">Damage</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="id_evidence_file">Photo</label>
+            <input id="id_evidence_file" name="file" type="file" accept="image/jpeg,image/png,image/webp" required aria-describedby="evidence-help">
+            <small id="evidence-help">JPEG, PNG or WebP, at most 5 MB.</small>
+          </div>
+        </div>
+        <div class="row"><button type="submit" class="btn btn--primary">Upload and anchor</button></div>
+      </form>
+      <div class="gallery mt-4" data-gallery></div>
+    </section>
+
+    <section class="mt-8" aria-labelledby="timeline-heading">
+      <h2 id="timeline-heading">Ledger timeline</h2>
+      <ol class="events mt-4" data-events></ol>
+      <p class="muted mt-4" data-no-events hidden>Nothing has happened on the ledger yet.</p>
+    </section>
+  </div>
 </div>
 
-<div class="grid grid--2">
-  <section class="card" aria-labelledby="deposit-heading">
-    <h2 id="deposit-heading" class="card__title">Deposit in escrow</h2>
-    <p class="amount">{{ lease.deposit_amount }}<span class="amount__unit">{{ lease.currency }}</span></p>
-    <dl class="details mt-4">
-      {% if lease.escrow_address %}
-      <dt>Escrow</dt>
-      <dd>
-        <span class="mono small">{{ lease.escrow_address }}</span>
-        <button type="button" class="btn btn--ghost btn--sm" data-copy="{{ lease.escrow_address }}">Copy</button>
-      </dd>
-      {% endif %}
-      {% if escrow_config.currency.issuer %}
-      <dt>Issuer</dt>
-      <dd class="mono small">{{ escrow_config.currency.issuer }}</dd>
-      {% endif %}
-      <dt>Network</dt>
-      <dd>{{ escrow_config.network.name|default:"Testnet" }}</dd>
-    </dl>
-
-    {% if lease.status == "awaiting_deposit" %}
-    <form class="mt-4" method="post" action="{% url 'escrow:lease_deposit' lease.id %}"
-          data-confirm="Send {{ lease.deposit_amount }} {{ lease.currency }} into escrow? This can't be undone from your wallet.">
-      {% csrf_token %}
-      <button type="submit" class="btn btn--primary btn--block" data-requires-wallet data-requires-party>Pay deposit</button>
-    </form>
-    {% endif %}
-  </section>
-
-  <section class="card" aria-labelledby="progress-heading">
-    <h2 id="progress-heading" class="card__title">Progress</h2>
-    <ol class="timeline">
-      <li class="{% if lease.status == 'awaiting_deposit' %}is-current{% else %}is-done{% endif %}">Deposit paid</li>
-      <li class="{% if lease.status == 'active' %}is-current{% elif lease.status == 'voting' or lease.status == 'released_tenant' or lease.status == 'released_owner' %}is-done{% endif %}">Lease in progress</li>
-      <li class="{% if lease.status == 'voting' %}is-current{% elif lease.status == 'released_tenant' or lease.status == 'released_owner' %}is-done{% endif %}">Decision (2 of 3 votes)</li>
-      <li class="{% if lease.status == 'released_tenant' or lease.status == 'released_owner' %}is-done{% endif %}">Deposit released</li>
-    </ol>
-  </section>
-</div>
-
-<section class="mt-8" aria-labelledby="parties-heading">
-  <h2 id="parties-heading">Parties and votes</h2>
-  <div class="grid grid--3 mt-4">
-    {% for party in lease.parties %}
-    <article class="card party party--{{ party.role }}" data-party-address="{{ party.address }}">
-      <p class="party__role">{{ party.role_display }}<span class="badge badge--info party__you" data-you hidden>You</span></p>
-      <p class="mono small mt-4" title="{{ party.address }}">{{ party.address }}</p>
-      <p class="mt-4">
-        {% if party.vote == "tenant" %}<span class="badge badge--success">Voted: return to tenant</span>
-        {% elif party.vote == "owner" %}<span class="badge badge--danger">Voted: release to owner</span>
-        {% else %}<span class="badge">No vote yet</span>{% endif %}
-      </p>
-    </article>
-    {% endfor %}
-  </div>
-
-  <div class="grid grid--2 mt-4">
-    <div>
-      <p class="small">Return to tenant: {{ lease.votes_for_tenant|default:0 }} / {{ lease.votes_required|default:2 }}</p>
-      <div class="progress" aria-hidden="true">
-        <span class="progress__step{% if lease.votes_for_tenant >= 1 %} is-filled{% endif %}"></span>
-        <span class="progress__step{% if lease.votes_for_tenant >= 2 %} is-filled{% endif %}"></span>
-      </div>
-    </div>
-    <div>
-      <p class="small">Release to owner: {{ lease.votes_for_owner|default:0 }} / {{ lease.votes_required|default:2 }}</p>
-      <div class="progress" aria-hidden="true">
-        <span class="progress__step{% if lease.votes_for_owner >= 1 %} is-filled{% endif %}"></span>
-        <span class="progress__step{% if lease.votes_for_owner >= 2 %} is-filled{% endif %}"></span>
-      </div>
-    </div>
-  </div>
-</section>
-
-{% if lease.status == "voting" %}
-<section class="card mt-8" aria-labelledby="vote-heading">
-  <h2 id="vote-heading" class="card__title">Cast your vote</h2>
-  <p class="muted">Your vote is signed in your own wallet. Once two votes match, the deposit is released automatically and can't be reversed.</p>
-  <p class="alert alert--warning mt-4" data-party-hint>Connect the wallet of the tenant, owner or arbiter to vote.</p>
-  <form class="row mt-4" method="post" action="{% url 'escrow:lease_vote' lease.id %}">
-    {% csrf_token %}
-    <button type="submit" name="decision" value="tenant" class="btn btn--primary"
-            data-requires-wallet data-requires-party
-            data-confirm="Vote to return the full deposit to the tenant?">Return deposit to tenant</button>
-    <button type="submit" name="decision" value="owner" class="btn btn--danger"
-            data-requires-wallet data-requires-party
-            data-confirm="Vote to release the full deposit to the owner?">Release deposit to owner</button>
-  </form>
-</section>
-{% endif %}
-
-{% if lease.transactions %}
-<section class="mt-8" aria-labelledby="tx-heading">
-  <h2 id="tx-heading">Ledger activity</h2>
-  <div class="table-wrap mt-4">
-    <table class="table">
-      <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Transaction</th></tr></thead>
-      <tbody>
-        {% for tx in lease.transactions %}
-        <tr>
-          <td><time datetime="{{ tx.timestamp|date:'c' }}">{{ tx.timestamp|date:"j M Y, H:i" }}</time></td>
-          <td>{{ tx.action_display }}</td>
-          <td class="mono small">
-            {% if tx.explorer_url %}<a href="{{ tx.explorer_url }}" target="_blank" rel="noopener noreferrer">{{ tx.hash|truncatechars:18 }}</a>
-            {% else %}{{ tx.hash|truncatechars:18 }}{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
-{% endif %}
+<dialog class="dialog" data-inspector aria-labelledby="inspector-title">
+  <h2 id="inspector-title">Settlement account, as the ledger holds it</h2>
+  <div data-inspector-body></div>
+  <form method="dialog" class="dialog__foot"><button class="btn btn--ghost btn--sm">Close</button></form>
+</dialog>
 {% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/lease.js' %}"></script>{% endblock %}

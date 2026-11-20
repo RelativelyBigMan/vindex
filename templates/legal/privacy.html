@@ -9,7 +9,9 @@
   <p>Points this page needs to cover:</p>
   <ul class="stack">
     <li>Wallet addresses and transactions are public on the blockchain and can't be erased.</li>
-    <li>Lease details (property address, dates) are stored off-chain and can be deleted on request.</li>
+    <li>Lease details (property name, dates) are stored off-chain and can be deleted on request.</li>
+    <li>Evidence photos are stored off-chain and shown only to the lease's tenant, landlord and arbiter. Only a fingerprint (SHA-256) of each photo is written to the ledger; a fingerprint can't be turned back into the photo, but it can't be erased either.</li>
+    <li>Connecting a browser wallet shares its public address and one signature that proves ownership. No seed or private key is ever requested.</li>
     <li>This site loads no third-party fonts, scripts, analytics or trackers.</li>
     <li>Only strictly necessary cookies are used (session and CSRF).</li>
     <li>Who the data controller is, the legal basis for processing, how long data is kept, and your rights.</li>

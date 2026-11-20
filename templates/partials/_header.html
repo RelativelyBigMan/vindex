@@ -17,7 +17,8 @@
     <nav class="site-nav" aria-label="Main">
       <ul>
         <li><a href="{% url 'escrow:dashboard' %}"{% if request.resolver_match.url_name == 'dashboard' %} aria-current="page"{% endif %}>My leases</a></li>
-        <li><a href="{% url 'escrow:lease_create' %}"{% if request.resolver_match.url_name == 'lease_create' %} aria-current="page"{% endif %}>New escrow</a></li>
+        <li><a href="{% url 'escrow:lease_create' %}"{% if request.resolver_match.url_name == 'lease_create' %} aria-current="page"{% endif %}>New deposit</a></li>
+        <li><a href="{% url 'escrow:arbiter' %}"{% if request.resolver_match.url_name == 'arbiter' %} aria-current="page"{% endif %}>Arbiter</a></li>
       </ul>
     </nav>
 
@@ -34,6 +35,12 @@
           <path d="M16 9.5l5 5M21 9.5l-5 5"/>
         </svg>
       </button>
+      {# Who this browser is acting as: a demo persona or a linked wallet. Filled from GET /api/me/. #}
+      <a class="persona-badge" data-persona href="{% if escrow_config.demo_mode %}{% url 'escrow:demo' %}{% else %}{% url 'escrow:dashboard' %}{% endif %}" hidden>
+        <span class="role-dot" aria-hidden="true"></span>
+        <span class="persona-badge__name" data-persona-name></span>
+        <span class="persona-badge__role" data-persona-role></span>
+      </a>
       <button type="button" class="btn btn--primary btn--sm" data-wallet-connect>Connect wallet</button>
       <span class="wallet__address mono" data-wallet-address hidden></span>
       <button type="button" class="btn btn--ghost btn--sm" data-wallet-disconnect hidden>Disconnect</button>

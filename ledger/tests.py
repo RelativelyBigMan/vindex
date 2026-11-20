@@ -261,3 +261,17 @@ class MultisignGuardTests(SimpleTestCase):
         with self.assertRaises(LedgerError) as ctx:
             services.create_settlement_account(self.signers[0], [a, a, self.signers[1].address], "EUR", a)
         self.assertEqual(ctx.exception.engine_result, "bad_signers")
+
+
+class MemoTests(SimpleTestCase):
+    def test_memo_round_trip_and_size_limit(self):
+        data = {"lease": "abc", "kind": "damage", "sha256": "ab" * 32}
+        from xrpl.models.transactions import AccountSet
+        from xrpl.wallet import Wallet
+
+        tx = AccountSet(account=Wallet.create().address, memos=[services._memo("safedeposit/evidence", data)]).to_xrpl()
+        self.assertEqual(services.read_memo(tx, "safedeposit/evidence"), data)
+        self.assertIsNone(services.read_memo(tx, "other/type"))
+        self.assertIsNone(services.read_memo({}, "safedeposit/evidence"))
+        with self.assertRaises(LedgerError):
+            services._memo("safedeposit/evidence", {"x": "y" * 2000})

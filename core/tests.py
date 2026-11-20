@@ -9,6 +9,7 @@ from django.core.cache import cache
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
+from xrpl.core import keypairs
 from xrpl.utils import datetime_to_ripple_time
 from xrpl.wallet import Wallet
 
@@ -26,7 +27,7 @@ MOCKED = [
     "get_token_balance", "prepare_payout_txs", "sign_prepared", "execute_multisigned", "get_signer_list",
     "get_account_flags", "get_balances", "get_transaction", "build_escrow_create", "build_escrow_finish",
     "fund_xrp", "issue_tokens", "ensure_trust_line", "has_trust_line", "faucet_top_up",
-    "find_escrow_create_hash",
+    "find_escrow_create_hash", "anchor_memo", "build_anchor_memo", "get_credentials", "get_account_raw", "account_exists",
 ]
 
 
@@ -79,6 +80,9 @@ class LedgerMockedTestCase(TestCase):
         self.ledger.get_account_flags.return_value = {"default_ripple": False, "allow_trustline_locking": False, "disable_master": True}
         self.ledger.get_balances.return_value = {"XRP": Decimal("25"), "EUR": Decimal("5000")}
         self.ledger.find_escrow_create_hash.return_value = None
+        self.ledger.anchor_memo.return_value = "ANCHORHASH"
+        self.ledger.get_credentials.return_value = []
+        self.ledger.account_exists.return_value = True
 
     def _create_settlement(self, treasury, signers, code, issuer, on_step=None):
         for step in ("funded", "trust_line", "signers", "master_disabled"):
@@ -579,7 +583,23 @@ class ApiTests(LedgerMockedTestCase):
         self.assertEqual((response.status_code, response.json()["code"]), (400, "escrow_mismatch"))
         active = self.make_lease(S.ACTIVE)
         response = self.post(f"/api/leases/{active.pk}/release/", {"reason": "early_move_out", "mode": "wallet", "tx_hash": "AB" * 32})
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual((response.status_code, response.json()["code"]), (400, "release_mismatch"))
+        self.ledger.get_transaction.return_value = {
+            "validated": True, "result": "tesSUCCESS",
+            "tx": {"TransactionType": "EscrowFinish", "Owner": self.tenant.address, "OfferSequence": 42, "Account": self.tenant.address},
+        }
+        response = self.post(f"/api/leases/{active.pk}/release/", {"reason": "early_move_out", "mode": "wallet", "tx_hash": "AB" * 32})
+        self.assertEqual((response.status_code, response.json()["status"]), (200, "IN_SETTLEMENT"))
+        self.ledger.finish_escrow.assert_not_called()
+
+    def test_wallet_release_must_be_this_escrow_from_this_party(self):
+        lease = self.make_lease(S.ACTIVE)
+        tx = {"TransactionType": "EscrowFinish", "Owner": self.tenant.address, "OfferSequence": 42, "Account": self.tenant.address}
+        for change in ({"OfferSequence": 43}, {"Owner": "rOther"}, {"Account": self.landlord.address}, {"TransactionType": "Payment"}):
+            found = {"validated": True, "result": "tesSUCCESS", "tx": {**tx, **change}}
+            self.assertTrue(lifecycle.verify_escrow_finish_tx(lease, self.tenant, found), change)
+        self.assertEqual(lifecycle.verify_escrow_finish_tx(lease, self.tenant, {"validated": True, "result": "tesSUCCESS", "tx": tx}), [])
+        self.assertTrue(lifecycle.verify_escrow_finish_tx(lease, self.tenant, {"validated": True, "result": "tecNO_PERMISSION", "tx": tx}))
 
     def test_actions_are_enforced_and_errors_follow_the_contract(self):
         lease = self.make_lease(S.ACTIVE)
@@ -631,13 +651,94 @@ class ApiTests(LedgerMockedTestCase):
         state = self.client.get(f"/api/leases/{lease.pk}/").json()
         self.assertEqual((state["status"], state["seconds_to_cancel_after"], state["escrow"]["exists"]), ("RETURNED", 0, False))
 
-    def test_wallet_link_creates_a_keyless_party(self):
-        address = Wallet.create().address
+    def link_wallet(self, wallet, role="landlord", signer=None, **changes):
+        message = self.client.get("/api/wallet/challenge/").json()["message"]
+        signature = keypairs.sign(message.encode(), (signer or wallet).private_key)
+        body = {"address": wallet.address, "role": role, "public_key": (signer or wallet).public_key, "signature": signature}
+        return self.post("/api/wallet/link/", {**body, **changes})
+
+    def test_wallet_link_needs_a_signed_challenge(self):
+        wallet = Wallet.create()
         self.assertEqual(self.post("/api/wallet/link/", {"address": "nope", "role": "tenant"}).status_code, 400)
-        linked = self.post("/api/wallet/link/", {"address": address, "role": "landlord"}).json()
-        party = Party.objects.get(address=address)
-        self.assertEqual((party.seed, party.wallet_type, linked["party_id"]), (None, "gemwallet", party.pk))
-        self.assertEqual(self.post("/api/wallet/link/", {"address": address, "role": "tenant"}).status_code, 409)
+        # No challenge was requested, a signature by another key, and a replayed signature are all refused.
+        unsigned = self.post("/api/wallet/link/", {"address": wallet.address, "role": "landlord"})
+        self.assertEqual((unsigned.status_code, unsigned.json()["code"]), (409, "challenge_expired"))
+        self.assertEqual(self.link_wallet(wallet, signer=Wallet.create()).json()["code"], "bad_signature")
+        self.assertFalse(Party.objects.filter(address=wallet.address).exists())
+
+        message = self.client.get("/api/wallet/challenge/").json()["message"]
+        body = {"address": wallet.address, "role": "landlord", "public_key": wallet.public_key,
+                "signature": keypairs.sign(message.encode(), wallet.private_key)}
+        linked = self.post("/api/wallet/link/", body)
+        self.assertEqual(linked.status_code, 200)
+        party = Party.objects.get(address=wallet.address)
+        self.assertEqual((party.seed, party.wallet_type, linked.json()["party_id"]), (None, "gemwallet", party.pk))
+        self.assertEqual(self.client.get("/api/me/").json()["party_id"], party.pk)
+        self.assertEqual(self.post("/api/wallet/link/", body).json()["code"], "challenge_expired")  # one use only
+
+    def test_a_wallet_party_can_propose_but_not_approve(self):
+        wallet = Wallet.create()
+        outside = Party.objects.create(display_name="Wallet", role="landlord", address=wallet.address, seed=None, wallet_type="gemwallet")
+        lease = self.make_lease(S.IN_SETTLEMENT)
+        lease.landlord = outside
+        lease.save()
+        proposal = lifecycle.propose(lease, outside, "900", "100", "scratches")
+        self.assertEqual(proposal.signatures, {})
+        self.assertEqual(lifecycle.allowed_actions(lease, outside), ["propose", "upload_evidence", "share_verify"])
+        self.assertIn(f"sign:{proposal.pk}", lifecycle.allowed_actions(lease, self.tenant))
+        with self.assertRaises(InvalidTransition):
+            lifecycle.sign(proposal, outside)
+        lifecycle.sign(proposal, self.tenant)
+        lifecycle.sign(proposal, self.arbiter)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.SETTLED)
+
+    def test_lease_with_a_pasted_landlord_address(self):
+        address = Wallet.create().address
+        self.assertEqual(self.new_lease(landlord_id=None, landlord_address="rNope").json()["code"], "bad_address")
+        self.ledger.account_exists.return_value = False
+        self.assertEqual(self.new_lease(landlord_id=None, landlord_address=address).json()["code"], "unknown_account")
+        self.ledger.account_exists.return_value = True
+        created = self.new_lease(landlord_id=None, landlord_address=address, title="  Via Roma   12 ")
+        self.assertEqual(created.status_code, 201)
+        lease = Lease.objects.get(pk=created.json()["lease_id"])
+        self.assertEqual((lease.landlord.address, lease.landlord.seed, lease.title), (address, None, "Via Roma 12"))
+        self.assertEqual(self.new_lease(landlord_id=None, landlord_address=self.arbiter.address).json()["code"], "role_mismatch")
+
+    def test_verified_arbiter_comes_from_an_accepted_registry_credential(self):
+        registry = PlatformWallet.objects.create(role="credential_issuer", address="rRegistry", seed="s")
+        lease = self.make_lease(S.ACTIVE)
+        credential = {"issuer": registry.address, "type": "VERIFIED_ARBITER", "type_hex": "", "uri": "", "accepted": False}
+        arbiter = lambda: self.client.get(f"/api/leases/{lease.pk}/").json()["parties"][2]["verified_arbiter"]  # noqa: E731
+        for held, expected in (([], False), ([credential], False), ([{**credential, "issuer": "rFake", "accepted": True}], False),
+                               ([{**credential, "accepted": True}], True)):
+            cache.clear()
+            self.ledger.get_credentials.return_value = held
+            self.assertIs(arbiter(), expected, held)
+
+    def test_stage_buttons_act_as_the_right_persona(self):
+        lease = self.make_lease(S.ACTIVE, scenario="B")
+        self.assertEqual(self.post("/api/demo/stage/act/", {"lease_id": str(self.make_lease(S.ACTIVE).pk), "step": "move_out"}).status_code, 404)
+        state = self.post("/api/demo/stage/act/", {"lease_id": str(lease.pk), "step": "move_out"}).json()
+        self.assertEqual(state["scenarios"]["B"]["status"], "IN_SETTLEMENT")
+        state = self.post("/api/demo/stage/act/", {"lease_id": str(lease.pk), "step": "landlord_approve"}).json()
+        self.assertEqual((state["scenarios"]["B"]["status"], state["scenarios"]["A"]), ("SETTLED", None))
+
+    def test_pages_render_with_a_strict_csp_and_no_secrets(self):
+        lease = self.make_lease(S.ACTIVE)
+        for url in ("/", "/leases/", "/leases/new/", f"/leases/{lease.pk}/", f"/verify/{lease.pk}/", "/arbiter/", "/demo/",
+                    "/demo/stage/", "/legal/terms/", "/legal/privacy/"):
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, url)
+            self.assertIn("script-src 'self'", response["Content-Security-Policy"])
+            html = response.content.decode()
+            self.assertNotIn(lease.fulfillment_hex, html)
+            self.assertNotIn(self.tenant.seed, html)
+            self.assertNotIn(" style=", html)
+            self.assertNotIn("onclick", html)
+        self.assertEqual(self.client.get("/leases/00000000-0000-0000-0000-000000000000/").status_code, 404)
+        public = self.client.get(f"/api/leases/{lease.pk}/public/").content.decode()
+        self.assertNotIn(lease.fulfillment_hex, public)
 
     def test_evidence_upload_checks_the_file(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
@@ -655,8 +756,30 @@ class ApiTests(LedgerMockedTestCase):
             self.assertEqual(good.status_code, 201)
             self.assertEqual(good.json()["sha256"], hashlib.sha256(png).hexdigest())
             self.assertNotIn("evil", good.json()["url"])
+            item = good.json()
+            self.assertEqual(item["anchor_tx_hash"], "ANCHORHASH")
+            self.assertEqual(self.ledger.anchor_memo.call_args.args[2], {"lease": str(lease.pk), "kind": "damage", "sha256": item["sha256"]})
+            self.assertTrue(LedgerEvent.objects.filter(kind="evidence_anchored", tx_hash="ANCHORHASH").exists())
+            photo = self.client.get(item["url"])
+            self.assertEqual((photo.status_code, photo["Content-Type"], b"".join(photo.streaming_content)), (200, "image/png", png))
             self.act_as(self.arbiter)
+            self.assertEqual(self.client.get(item["url"]).status_code, 200)  # the arbiter sees it, but can't upload
             self.assertEqual(self.client.post(url, {"kind": "damage", "file": SimpleUploadedFile("x.png", png)}).status_code, 409)
+            self.act_as(self.outsider)
+            self.assertEqual(self.client.get(item["url"]).status_code, 404)
+
+    def test_wallet_anchor_must_carry_this_photos_fingerprint(self):
+        from core.models import Evidence
+
+        lease = self.make_lease(S.ACTIVE)
+        item = Evidence.objects.create(lease=lease, kind="damage", sha256="ab" * 32, uploaded_by=self.tenant)
+        memo = lifecycle.evidence_memo(item)
+        self.ledger.get_transaction.return_value = {"validated": True, "result": "tesSUCCESS", "tx": {"Account": self.tenant.address}}
+        with mock.patch.object(services, "read_memo", return_value={**memo, "sha256": "cd" * 32}):
+            with self.assertRaises(InvalidInput):
+                lifecycle.register_wallet_anchor(item, "AB" * 32)
+        with mock.patch.object(services, "read_memo", return_value=memo):
+            self.assertEqual(lifecycle.register_wallet_anchor(item, "AB" * 32).anchor_tx_hash, "AB" * 32)
 
 
 class DemoResetTests(LedgerMockedTestCase):

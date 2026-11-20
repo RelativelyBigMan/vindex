@@ -28,7 +28,7 @@ from xrpl.wallet import Wallet
 from ledger import services
 from ledger.errors import ExpiredPreparedTx, LedgerError
 
-from .models import Lease, LedgerEvent, Party, PlatformWallet, SettlementProposal
+from .models import Evidence, Lease, LedgerEvent, Party, PlatformWallet, SettlementProposal
 
 log = logging.getLogger(__name__)
 
@@ -348,19 +348,62 @@ def release(lease, party, reason):
             if exc.engine_result == "escrow_expired":
                 raise InvalidTransition(exc.message, "escrow_expired") from exc
             raise
-        if _advance(lease, S.ACTIVE, S.IN_SETTLEMENT, release_reason=reason):
-            what = "moved out early" if reason == Lease.ReleaseReason.EARLY_MOVE_OUT else "claimed damage"
-            record(
-                lease, "released",
-                f"{party.display_name} ({role}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
-            )
-        if reason == Lease.ReleaseReason.EARLY_MOVE_OUT:
-            try:
-                _propose(lease, party, lease.amount, Decimal("0"), "Early move-out: the full deposit goes back to the tenant.")
-            except (LedgerError, InvalidInput, InvalidTransition) as exc:
-                # The deposit is safe in the settlement account; anyone can still propose by hand.
-                log.warning("default proposal for lease %s failed: %s", lease.pk, exc)
+        _after_release(lease, party, role, reason, tx_hash)
     return lease
+
+
+def verify_escrow_finish_tx(lease, party, found):
+    """Check a wallet-submitted transaction is this party's release of this lease's escrow. -> list of problems."""
+    if found is None:
+        return ["the network doesn't know this transaction yet (wait a few seconds and try again)"]
+    if not found.get("validated"):
+        return ["the transaction isn't in a validated ledger yet (wait a few seconds and try again)"]
+    if found.get("result") != "tesSUCCESS":
+        return [f"the transaction failed on the ledger ({found.get('result')})"]
+    tx = found.get("tx") or {}
+    if tx.get("TransactionType") != "EscrowFinish":
+        return ["it is not an escrow release"]
+    problems = []
+    if tx.get("Owner") != lease.escrow_owner or tx.get("OfferSequence") != lease.escrow_sequence:
+        problems.append("it releases a different escrow")
+    if tx.get("Account") != party.address:
+        problems.append("it wasn't sent from your wallet")
+    return problems
+
+
+def register_wallet_release(lease, party, reason, tx_hash):
+    """Wallet mode: accept an EscrowFinish the tenant or landlord signed in their own wallet, after checking it."""
+    if reason not in Lease.ReleaseReason.values:
+        raise InvalidInput("The reason must be early_move_out or damage_claim.", "bad_reason")
+    tx_hash = str(tx_hash or "").strip().upper()
+    if not re.fullmatch(r"[0-9A-F]{64}", tx_hash):
+        raise InvalidInput("That doesn't look like a transaction hash.", "bad_tx_hash")
+    with _exclusive(lease):
+        lease.refresh_from_db()
+        _require_status(lease, S.ACTIVE, "release the deposit")
+        role = lease.role_of(party)
+        if role not in ("tenant", "landlord"):
+            raise InvalidTransition("Only the tenant or the landlord can release the deposit.", "not_allowed")
+        problems = verify_escrow_finish_tx(lease, party, services.get_transaction(tx_hash))
+        if problems:
+            raise InvalidInput("This transaction can't be accepted as the release: " + "; ".join(problems) + ".", "release_mismatch")
+        _after_release(lease, party, role, reason, tx_hash)
+    return lease
+
+
+def _after_release(lease, party, role, reason, tx_hash):
+    if _advance(lease, S.ACTIVE, S.IN_SETTLEMENT, release_reason=reason):
+        what = "moved out early" if reason == Lease.ReleaseReason.EARLY_MOVE_OUT else "claimed damage"
+        record(
+            lease, "released",
+            f"{party.display_name} ({role}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
+        )
+    if reason == Lease.ReleaseReason.EARLY_MOVE_OUT:
+        try:
+            _propose(lease, party, lease.amount, Decimal("0"), "Early move-out: the full deposit goes back to the tenant.")
+        except (LedgerError, InvalidInput, InvalidTransition) as exc:
+            # The deposit is safe in the settlement account; anyone can still propose by hand.
+            log.warning("default proposal for lease %s failed: %s", lease.pk, exc)
 
 
 # ---- settlement: propose and sign ----
@@ -398,21 +441,21 @@ def _propose(lease, party, tenant_amount, landlord_amount, reason):
             f"The two amounts must add up to exactly {money(lease, balance)}, the amount held in the settlement account.",
             "payout_sum_mismatch",
         )
-    wallet = wallet_for(party)
     prepared = services.prepare_payout_txs(lease.settlement_address, _payouts(lease, tenant_amount, landlord_amount), code, issuer)
-    signed = [services.sign_prepared(tx, wallet) for tx in prepared]
+    # A party using their own browser wallet can propose, but can't approve: the wallet can't multisign.
+    signatures = {str(party.pk): [services.sign_prepared(tx, wallet_for(party)) for tx in prepared]} if party.seed else {}
 
     for old in open_proposals:
         old.status = SettlementProposal.Status.SUPERSEDED
         old.save(update_fields=["status"])
     proposal = SettlementProposal.objects.create(
         lease=lease, tenant_amount=tenant_amount, landlord_amount=landlord_amount, reason=reason,
-        proposed_by=party, prepared_txs=prepared, signatures={str(party.pk): signed},
+        proposed_by=party, prepared_txs=prepared, signatures=signatures,
     )
     record(
         lease, "proposed",
         f"{party.display_name} proposed a split: {money(lease, tenant_amount)} to the tenant, "
-        f"{money(lease, landlord_amount)} to the landlord (1 of {QUORUM} approvals)",
+        f"{money(lease, landlord_amount)} to the landlord ({len(signatures)} of {QUORUM} approvals)",
     )
     return proposal
 
@@ -502,6 +545,55 @@ def _prepare_again(proposal, lease):
     }
     proposal.save(update_fields=["prepared_txs", "signatures"])
     log.info("proposal %s: payouts had expired and were prepared and signed again", proposal.pk)
+
+
+# ---- evidence: a photo's SHA-256 anchored in a public memo ----
+
+EVIDENCE_MEMO_TYPE = "safedeposit/evidence"
+
+
+def evidence_memo(item):
+    """What goes on the ledger for a photo: ids and the hash only, never names or the picture."""
+    return {"lease": str(item.lease_id), "kind": item.kind, "sha256": item.sha256}
+
+
+def _mark_anchored(item, tx_hash):
+    changed = Evidence.objects.filter(pk=item.pk, anchor_tx_hash="").update(anchor_tx_hash=tx_hash)
+    item.refresh_from_db()
+    if changed:
+        record(
+            item.lease, "evidence_anchored",
+            f"{item.uploaded_by.display_name} anchored a {item.get_kind_display().lower()} photo's fingerprint on the ledger", tx_hash,
+        )
+    return item
+
+
+def anchor_evidence_demo(item):
+    """Demo mode: the uploader's server-held wallet writes the photo's hash to the ledger."""
+    if item.anchor_tx_hash:
+        return item
+    tx_hash = services.anchor_memo(wallet_for(item.uploaded_by), EVIDENCE_MEMO_TYPE, evidence_memo(item))
+    return _mark_anchored(item, tx_hash)
+
+
+def register_wallet_anchor(item, tx_hash):
+    """Wallet mode: accept the anchoring transaction the uploader signed, after checking it on the ledger."""
+    tx_hash = str(tx_hash or "").strip().upper()
+    if not re.fullmatch(r"[0-9A-F]{64}", tx_hash):
+        raise InvalidInput("That doesn't look like a transaction hash.", "bad_tx_hash")
+    if item.anchor_tx_hash:
+        raise InvalidTransition("This photo is already anchored.", "already_anchored")
+    found = services.get_transaction(tx_hash)
+    if found is None or not found.get("validated"):
+        raise InvalidInput("The network hasn't validated this transaction yet. Wait a few seconds and try again.", "anchor_mismatch")
+    tx = found.get("tx") or {}
+    if (
+        found.get("result") != "tesSUCCESS"
+        or tx.get("Account") != item.uploaded_by.address
+        or services.read_memo(tx, EVIDENCE_MEMO_TYPE) != evidence_memo(item)
+    ):
+        raise InvalidInput("That transaction doesn't anchor this photo from the uploader's wallet.", "anchor_mismatch")
+    return _mark_anchored(item, tx_hash)
 
 
 # ---- the bot: ACTIVE -> RETURNED ----
@@ -602,7 +694,8 @@ def allowed_actions(lease, party, now=None):
         proposal = open_proposal(lease)
         if proposal is None or not proposal.executed_hashes:
             actions.append("propose")
-        if proposal is not None and (str(party.pk) not in proposal.signatures or len(proposal.signatures) >= QUORUM):
+        may_sign = bool(party.seed) or len(proposal.signatures) >= QUORUM if proposal is not None else False
+        if may_sign and (str(party.pk) not in proposal.signatures or len(proposal.signatures) >= QUORUM):
             actions.append(f"sign:{proposal.pk}")
     if role in ("tenant", "landlord") and lease.status in (S.SETTLEMENT_READY, S.ACTIVE, S.IN_SETTLEMENT):
         actions.append("upload_evidence")

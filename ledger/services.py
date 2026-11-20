@@ -18,6 +18,8 @@ from xrpl.models.requests.ledger_entry import Escrow as EscrowLocator
 from xrpl.models.transactions import (
     AccountSet,
     AccountSetAsfFlag,
+    CredentialAccept,
+    CredentialCreate,
     EscrowCancel,
     EscrowCreate,
     EscrowFinish,
@@ -247,6 +249,16 @@ def ensure_trust_line(holder_wallet, currency_code, issuer_address, limit=DEFAUL
         limit_amount=IssuedCurrencyAmount(currency=currency_code, issuer=issuer_address, value=str(limit)),
     )
     return submit(tx, holder_wallet)["hash"]
+
+
+def autofill_trust_set(address, currency_code, issuer_address, limit=DEFAULT_TRUST_LIMIT):
+    """Unsigned, autofilled TrustSet as XRPL JSON, for a wallet to sign."""
+    client = get_client()
+    tx = TrustSet(account=address, limit_amount=IssuedCurrencyAmount(currency=currency_code, issuer=issuer_address, value=limit))
+    try:
+        return autofill(tx, client).to_xrpl()
+    except Exception as exc:
+        raise LedgerError.from_exception(exc) from exc
 
 
 def issue_tokens(issuer_wallet, to_address, currency_code, amount):
@@ -671,18 +683,122 @@ def execute_multisigned(tx_dict, signed_jsons, enforce_quorum=True):
 
 # ---- memo anchoring (used for evidence in Patch 6) ----
 
+def _memo(memo_type, data_dict):
+    data = json.dumps(data_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    if len(data) + len(memo_type.encode("utf-8")) > MAX_MEMO_BYTES:
+        raise LedgerError("memo_too_large", "That is too much data to anchor in one transaction.")
+    return Memo(
+        memo_type=memo_type.encode("utf-8").hex().upper(),
+        memo_format=b"application/json".hex().upper(),
+        memo_data=data.hex().upper(),
+    )
+
+
 def anchor_memo(wallet, memo_type, data_dict):
     """Write one Memo to the ledger on an AccountSet that changes no flags. -> tx_hash
 
     memo_type is text such as 'safedeposit/evidence'; data_dict is stored as compact JSON.
     Memos are PUBLIC and permanent: anchor hashes and ids only, never personal data.
     """
-    data = json.dumps(data_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    if len(data) + len(memo_type.encode("utf-8")) > MAX_MEMO_BYTES:
-        raise LedgerError("memo_too_large", "That is too much data to anchor in one transaction.")
-    memo = Memo(
-        memo_type=memo_type.encode("utf-8").hex().upper(),
-        memo_format=b"application/json".hex().upper(),
-        memo_data=data.hex().upper(),
+    return submit(AccountSet(account=wallet.address, memos=[_memo(memo_type, data_dict)]), wallet)["hash"]
+
+
+def build_anchor_memo(address, memo_type, data_dict):
+    """The same anchoring transaction, unsigned and autofilled, for a browser wallet to sign."""
+    client = get_client()
+    tx = AccountSet(
+        account=address, memos=[_memo(memo_type, data_dict)],
+        last_ledger_sequence=latest_validated_ledger_index(client) + WALLET_LEDGER_WINDOW,
     )
-    return submit(AccountSet(account=wallet.address, memos=[memo]), wallet)["hash"]
+    try:
+        return autofill(tx, client).to_xrpl()
+    except Exception as exc:
+        raise LedgerError.from_exception(exc) from exc
+
+
+def read_memo(tx_json, memo_type):
+    """The JSON data of the first memo of `memo_type` on a transaction's XRPL JSON, or None."""
+    wanted = memo_type.encode("utf-8").hex().upper()
+    for entry in tx_json.get("Memos") or []:
+        memo = entry.get("Memo") or {}
+        if (memo.get("MemoType") or "").upper() == wanted:
+            try:
+                return json.loads(bytes.fromhex(memo.get("MemoData") or "").decode("utf-8"))
+            except ValueError:
+                return None
+    return None
+
+
+# ---- credentials (the verified arbiter) ----
+
+LSF_CREDENTIAL_ACCEPTED = 0x00010000
+
+
+def _hex(text):
+    return text.encode("utf-8").hex().upper()
+
+
+def _text(hex_value):
+    try:
+        return bytes.fromhex(hex_value or "").decode("utf-8")
+    except ValueError:
+        return hex_value or ""
+
+
+def get_credentials(address, client=None):
+    """Credentials where `address` is the subject. -> [{'issuer', 'type', 'type_hex', 'uri', 'accepted'}]
+
+    'accepted' is the ledger's lsfAccepted flag: only then does the credential count.
+    """
+    found, marker = [], None
+    while True:
+        try:
+            result = _request(
+                AccountObjects(account=address, type=AccountObjectType.CREDENTIAL, ledger_index="validated", marker=marker),
+                client,
+            )
+        except LedgerError as exc:
+            if exc.engine_result == "actNotFound":
+                return []
+            raise
+        for node in result.get("account_objects", []):
+            if node.get("Subject") != address:
+                continue  # the same list also holds credentials this account issued
+            found.append({
+                "issuer": node.get("Issuer"),
+                "type": _text(node.get("CredentialType")),
+                "type_hex": node.get("CredentialType"),
+                "uri": _text(node.get("URI")),
+                "accepted": bool(int(node.get("Flags", 0)) & LSF_CREDENTIAL_ACCEPTED),
+            })
+        marker = result.get("marker")
+        if not marker:
+            return found
+
+
+def issue_credential(issuer_wallet, subject_address, credential_type, uri=None):
+    """CredentialCreate from the issuer to the subject. -> tx_hash (the subject still has to accept)."""
+    tx = CredentialCreate(
+        account=issuer_wallet.address, subject=subject_address, credential_type=_hex(credential_type),
+        uri=_hex(uri) if uri else None,
+    )
+    return submit(tx, issuer_wallet)["hash"]
+
+
+def accept_credential(subject_wallet, issuer_address, credential_type):
+    """CredentialAccept by the subject. -> tx_hash"""
+    tx = CredentialAccept(account=subject_wallet.address, issuer=issuer_address, credential_type=_hex(credential_type))
+    return submit(tx, subject_wallet)["hash"]
+
+
+# ---- raw ledger view of an account (the settlement inspector) ----
+
+def get_account_raw(address, client=None):
+    """What the validated ledger holds for an account, unprocessed: account root, signer lists, trust lines."""
+    result = _request(AccountInfo(account=address, ledger_index="validated", signer_lists=True), client)
+    return {
+        "ledger_index": result.get("ledger_index"),
+        "account_data": result.get("account_data"),
+        "signer_lists": result.get("signer_lists") or (result.get("account_data") or {}).get("signer_lists") or [],
+        "lines": _lines(address, client),
+    }

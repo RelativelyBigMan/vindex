@@ -7,13 +7,14 @@
   <meta name="referrer" content="strict-origin-when-cross-origin">
   {# No external fonts, scripts or trackers: keeps the page CSP-friendly and avoids leaking visitor IPs to third parties (GDPR). #}
   <title>{% block title %}safeDeposit{% endblock %} · safeDeposit</title>
-  <meta name="description" content="{% block meta_description %}Rental deposits held in escrow and released by a 2-of-3 decision between tenant, owner and an independent arbiter.{% endblock %}">
+  <meta name="description" content="{% block meta_description %}Your deposit, returned by the ledger. Rental deposits locked in an XRP Ledger escrow and settled by any two of tenant, landlord and an independent arbiter.{% endblock %}">
+  <link rel="icon" type="image/svg+xml" href="{% static 'img/favicon.svg' %}">
   {# Self-hosted fonts (subset of Latin Modern, GUST licence). Preload the body face so text doesn't reflow. #}
   <link rel="preload" href="{% static 'fonts/sdmodern-roman-regular.woff2' %}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{% static 'css/global.css' %}">
   {% block extra_css %}{% endblock %}
 </head>
-<body class="{% block body_class %}{% endblock %}">
+<body class="{% block body_class %}{% endblock %}{% if escrow_config.demo_mode %} has-demo-bar{% endif %}" data-static="{% static '' %}">
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="scroll-progress" aria-hidden="true"></div>
 
@@ -25,6 +26,25 @@
   </main>
 
   {% include "partials/_footer.html" %}
+
+  {# Transient notices. JS writes them with textContent, never innerHTML. #}
+  <div class="toasts" data-toasts role="status" aria-live="polite"></div>
+
+  {# Asked once when a browser wallet connects for the first time. #}
+  <dialog class="dialog" data-role-dialog aria-labelledby="role-dialog-title">
+    <form method="dialog">
+      <h2 id="role-dialog-title">Who is this wallet?</h2>
+      <p class="muted">Choose the part this wallet plays. It can't be changed later for this address.</p>
+      <div class="actions mt-4">
+        <button class="btn btn--tint-tenant" value="tenant">Tenant</button>
+        <button class="btn btn--tint-owner" value="landlord">Landlord</button>
+        <button class="btn btn--tint-arbiter" value="arbiter">Arbiter</button>
+      </div>
+      <div class="dialog__foot"><button class="btn btn--ghost btn--sm" value="">Cancel</button></div>
+    </form>
+  </dialog>
+
+  {% if escrow_config.demo_mode %}{% include "partials/_demo_bar.html" %}{% endif %}
 
   {# Server-side config passed safely to JS. json_script escapes the content so it can't break out of the tag (XSS-safe). #}
   {{ escrow_config|default_if_none:""|json_script:"escrow-config" }}

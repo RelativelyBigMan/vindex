@@ -11,3 +11,5 @@ media/
 __pycache__/
 *.pyc
 staticfiles/
+# Fetched by scripts/fetch_vendor.py (GemWallet's licence doesn't allow redistributing it in a public repo).
+static/vendor/gemwallet-api-*.js
