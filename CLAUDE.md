@@ -85,3 +85,10 @@ config/ (settings, urls) | core/ (models, lifecycle.py, api.py, views.py, manage
 
 ## Progress
 - Patch 1 (skeleton and XRPL bootstrap): done 2026-11-20. bootstrap_demo and preflight pass on Testnet.
+- Patch 2 (ledger mechanics and smoke test): done 2026-11-20. `manage.py smoke_test --scenario all` passes A, B and C on Testnet. Notes for later patches:
+  - `create_settlement_account(..., on_step)` calls `on_step(step, tx_hash)` (two arguments), so each setup step can be stored as a LedgerEvent with its hash.
+  - Prepared transactions and signatures are plain XRPL JSON dicts (`prepare_payout_txs`, `sign_prepared`, `execute_multisigned`); they can go straight into the JSON fields.
+  - `finish_escrow` raises LedgerError `escrow_expired`, `cancel_escrow` raises `escrow_not_expired`, `prepare_payout_txs` raises `payout_sum_mismatch` / `nothing_to_pay`; `execute_multisigned` raises `tefBAD_QUORUM`, `signature_mismatch` or `ExpiredPreparedTx`.
+  - `services.submit()` no longer uses xrpl-py's submit_and_wait: it fails at once on tem / tef / tel results instead of polling until LastLedgerSequence.
+  - `build_escrow_finish` returns the fulfillment inside the tx JSON: tenant / landlord only, never log it.
+  - Memos are public and permanent: anchor hashes and ids only, never names or other personal data.

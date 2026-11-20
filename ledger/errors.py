@@ -19,6 +19,11 @@ FRIENDLY = {
     "tecPATH_DRY": "The payment couldn't be delivered (missing trust line or not enough tokens).",
     "tefPAST_SEQ": "This transaction was already sent. Refresh and check the latest state.",
     "actNotFound": "That account doesn't exist on the ledger yet.",
+    "tefMASTER_DISABLED": "This account's own key is switched off; only its signers can move funds.",
+    "tefBAD_SIGNATURE": "One of the approvals doesn't come from a party named on this deposit.",
+    "tefNOT_MULTI_SIGNING": "This account has no signer list, so approvals can't be combined.",
+    "tecNO_AUTH": "The receiving account isn't authorised to hold this token.",
+    "tecFROZEN": "This token is frozen by its issuer.",
 }
 
 _ENGINE_RESULT = re.compile(r"\b(te[cfmlrs][A-Z][A-Z0-9_]+)\b")
@@ -40,3 +45,10 @@ class LedgerError(Exception):
         if match:
             return cls(match.group(1))
         return cls("network_error", f"Couldn't complete the ledger request: {text[:200]}")
+
+
+class ExpiredPreparedTx(LedgerError):
+    """A prepared (multisigned) transaction passed its LastLedgerSequence: prepare and sign it again."""
+
+    def __init__(self, message=None):
+        super().__init__("tefMAX_LEDGER", message)
