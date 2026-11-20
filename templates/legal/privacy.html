@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+
+{% block title %}Privacy{% endblock %}
+
+{% block content %}
+<article class="card stack prose">
+  <h1>Privacy notice</h1>
+  <div class="alert alert--warning">Placeholder. A qualified lawyer must review this before launch.</div>
+  <p>Points this page needs to cover:</p>
+  <ul class="stack">
+    <li>Wallet addresses and transactions are public on the blockchain and can't be erased.</li>
+    <li>Lease details (property address, dates) are stored off-chain and can be deleted on request.</li>
+    <li>This site loads no third-party fonts, scripts, analytics or trackers.</li>
+    <li>Only strictly necessary cookies are used (session and CSRF).</li>
+    <li>Who the data controller is, the legal basis for processing, how long data is kept, and your rights.</li>
+  </ul>
+</article>
+{% endblock %}

@@ -1,0 +1,10 @@
+{# Renders Django's messages framework. Messages are auto-escaped. #}
+{% if messages %}
+<div class="messages" role="status" aria-live="polite">
+  {% for message in messages %}
+    <div class="alert alert--{{ message.tags|default:'info' }}">{{ message }}</div>
+  {% endfor %}
+</div>
+{% endif %}
+{# JS writes wallet and transaction notices here using textContent, never innerHTML. #}
+<div class="messages" data-js-messages role="status" aria-live="polite"></div>

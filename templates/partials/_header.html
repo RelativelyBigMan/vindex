@@ -1,0 +1,25 @@
+{% if escrow_config.network.is_testnet|default:True %}
+<div class="network-banner" role="status">
+  <strong>{{ escrow_config.network.name|default:"Testnet" }}</strong>: test funds only. Nothing here has real value.
+</div>
+{% endif %}
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href="{% url 'home' %}">
+      <span class="brand__mark" aria-hidden="true">◆</span> Decelsus
+    </a>
+
+    <nav class="site-nav" aria-label="Main">
+      <ul>
+        <li><a href="{% url 'escrow:dashboard' %}"{% if request.resolver_match.url_name == 'dashboard' %} aria-current="page"{% endif %}>My leases</a></li>
+        <li><a href="{% url 'escrow:lease_create' %}"{% if request.resolver_match.url_name == 'lease_create' %} aria-current="page"{% endif %}>New escrow</a></li>
+      </ul>
+    </nav>
+
+    <div class="wallet" data-wallet>
+      <button type="button" class="btn btn--primary btn--sm" data-wallet-connect>Connect wallet</button>
+      <span class="wallet__address mono" data-wallet-address hidden></span>
+      <button type="button" class="btn btn--ghost btn--sm" data-wallet-disconnect hidden>Disconnect</button>
+    </div>
+  </div>
+</header>

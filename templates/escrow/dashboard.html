@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block title %}My leases{% endblock %}
+
+{% block content %}
+<div class="page-header row row--between">
+  <div>
+    <h1>My leases</h1>
+    <p>Escrows where you are the tenant, owner or arbiter.</p>
+  </div>
+  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">New escrow</a>
+</div>
+
+{% if leases %}
+<div class="table-wrap">
+  <table class="table">
+    <caption class="visually-hidden">Your leases</caption>
+    <thead>
+      <tr>
+        <th scope="col">Property</th>
+        <th scope="col">Your role</th>
+        <th scope="col">Lease ends</th>
+        <th scope="col" class="num">Deposit</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for lease in leases %}
+      <tr>
+        <td><a href="{% url 'escrow:lease_detail' lease.id %}">{{ lease.property_name }}</a></td>
+        <td>{{ lease.role_display }}</td>
+        <td><time datetime="{{ lease.end_date|date:'Y-m-d' }}">{{ lease.end_date|date:"j M Y" }}</time></td>
+        <td class="num">{{ lease.deposit_amount }} {{ lease.currency }}</td>
+        <td>{% include "partials/_status_badge.html" with status=lease.status label=lease.status_display %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card empty">
+  <p>You don't have any leases yet.</p>
+  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">Create your first escrow</a>
+</div>
+{% endif %}
+{% endblock %}
