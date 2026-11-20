@@ -1,0 +1,77 @@
+"""XRPL network configuration and client factory.
+
+Only Testnet and Devnet are supported. This app keeps demo keys on the server,
+so it must never talk to mainnet: assert_not_mainnet() runs at startup.
+"""
+from urllib.parse import urlparse
+
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from xrpl.clients import JsonRpcClient
+
+NETWORKS = {
+    "testnet": {
+        "name": "Testnet",
+        "json_rpc": "https://s.altnet.rippletest.net:51234/",
+        "ws": "wss://s.altnet.rippletest.net:51233",
+        "explorer": "https://testnet.xrpl.org",
+        "faucet": "https://faucet.altnet.rippletest.net/accounts",
+    },
+    "devnet": {
+        "name": "Devnet",
+        "json_rpc": "https://s.devnet.rippletest.net:51234/",
+        "ws": "wss://s.devnet.rippletest.net:51233",
+        "explorer": "https://devnet.xrpl.org",
+        "faucet": "https://faucet.devnet.rippletest.net/accounts",
+    },
+}
+
+# Hosts we are willing to talk to. An allow-list is safer than trying to list every mainnet server.
+_ALLOWED_HOST_SUFFIXES = (
+    "altnet.rippletest.net",
+    "devnet.rippletest.net",
+    "testnet.xrpl.org",
+    "devnet.xrpl.org",
+)
+
+
+def looks_like_mainnet(url):
+    """True unless the URL's host is a known Testnet/Devnet host."""
+    host = (urlparse(url).hostname or "").lower()
+    return not any(host == s or host.endswith("." + s) for s in _ALLOWED_HOST_SUFFIXES)
+
+
+def network_key():
+    return getattr(settings, "XRPL_NETWORK", "testnet")
+
+
+def network():
+    """The config dict of the selected network."""
+    key = network_key()
+    if key not in NETWORKS:
+        raise ImproperlyConfigured(f"XRPL_NETWORK must be one of {', '.join(NETWORKS)}; got {key!r}.")
+    return NETWORKS[key]
+
+
+def assert_not_mainnet():
+    """Raise at startup if the selected network is unknown or any URL is not a test network."""
+    net = network()
+    for field in ("json_rpc", "ws", "explorer", "faucet"):
+        if looks_like_mainnet(net[field]):
+            raise ImproperlyConfigured(
+                f"Refusing to start: {field} URL {net[field]!r} is not an XRPL Testnet/Devnet host. "
+                "safeDeposit holds demo keys and must never run against mainnet."
+            )
+
+
+def get_client():
+    """A synchronous JSON-RPC client for the selected network. Cheap to create; safe to use per call."""
+    return JsonRpcClient(network()["json_rpc"])
+
+
+def explorer_tx(tx_hash):
+    return f"{network()['explorer']}/transactions/{tx_hash}"
+
+
+def explorer_account(address):
+    return f"{network()['explorer']}/accounts/{address}"

@@ -3,3 +3,11 @@ node_modules/
 data/
 *.log
 .DS_Store
+.env
+.venv/
+db.sqlite3
+db.sqlite3-*
+media/
+__pycache__/
+*.pyc
+staticfiles/

@@ -2,7 +2,21 @@
 
 safeDeposit (repo: decelsus) holds rental deposits in escrow. The tenant's deposit (a stablecoin on the XRP Ledger testnet) is held for the length of the lease, then released by a **2-of-3 vote** between tenant, owner and an independent arbiter.
 
-This repo is **frontend only** so far. It's laid out the way Django expects, so a Django project can use it without moving files.
+The Django backend is being added in patches (see `CLAUDE.md` for the spec and progress). Patch 1 is in: the project skeleton, the XRPL Testnet wallets and test tokens, and a preflight check. The pages below aren't wired to URLs yet.
+
+## Setup
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env            # then set DJANGO_SECRET_KEY to a long random string
+.venv/bin/python manage.py migrate
+.venv/bin/python manage.py bootstrap_demo   # wallets, personas, test EUR/USD on Testnet (safe to rerun)
+.venv/bin/python manage.py preflight        # proves token escrow works on the network
+.venv/bin/python manage.py test ledger
+```
+
+If preflight says token escrow is disabled, set `XRPL_NETWORK=devnet` in `.env` and rerun `bootstrap_demo`.
+Demo keys live in `db.sqlite3` (git-ignored). They are Testnet keys with no value; the app refuses to start against mainnet.
 
 ## Layout
 
