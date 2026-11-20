@@ -3,7 +3,11 @@
 Only Testnet and Devnet are supported. This app keeps demo keys on the server,
 so it must never talk to mainnet: assert_not_mainnet() runs at startup.
 """
+import asyncio
+import logging
 from urllib.parse import urlparse
+
+import httpx
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
@@ -64,9 +68,31 @@ def assert_not_mainnet():
             )
 
 
+log = logging.getLogger(__name__)
+NETWORK_ATTEMPTS = 6  # with the pauses below: rides out about 15 s without a connection
+
+
+class RetryingJsonRpcClient(JsonRpcClient):
+    """JsonRpcClient that retries when the connection itself fails (DNS hiccup, reset, timeout).
+
+    Safe for every request we send: reads have no effect, and a signed transaction that is
+    submitted twice still applies once (same hash; the second submit reports it as already seen).
+    """
+
+    async def _request_impl(self, request, **kwargs):
+        for attempt in range(1, NETWORK_ATTEMPTS + 1):
+            try:
+                return await super()._request_impl(request, **kwargs)
+            except httpx.TransportError as exc:
+                if attempt == NETWORK_ATTEMPTS:
+                    raise
+                log.warning("ledger request failed (%s), attempt %s of %s", type(exc).__name__, attempt, NETWORK_ATTEMPTS)
+                await asyncio.sleep(min(attempt, 4))
+
+
 def get_client():
     """A synchronous JSON-RPC client for the selected network. Cheap to create; safe to use per call."""
-    return JsonRpcClient(network()["json_rpc"])
+    return RetryingJsonRpcClient(network()["json_rpc"])
 
 
 def explorer_tx(tx_hash):

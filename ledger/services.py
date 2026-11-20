@@ -13,7 +13,7 @@ from datetime import timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
 from xrpl.models.amounts import IssuedCurrencyAmount
-from xrpl.models.requests import AccountInfo, AccountLines, Ledger, LedgerEntry, Tx
+from xrpl.models.requests import AccountInfo, AccountLines, AccountObjects, AccountObjectType, Ledger, LedgerEntry, Tx
 from xrpl.models.requests.ledger_entry import Escrow as EscrowLocator
 from xrpl.models.transactions import (
     AccountSet,
@@ -32,7 +32,7 @@ from xrpl.transaction import autofill, autofill_and_sign, multisign
 from xrpl.transaction import sign as _sign
 from xrpl.transaction import submit as _submit_blob
 from xrpl.utils import datetime_to_ripple_time, ripple_time_to_datetime, xrp_to_drops
-from xrpl.wallet import Wallet
+from xrpl.wallet import Wallet, generate_faucet_wallet
 
 from .client import get_client
 from .errors import ExpiredPreparedTx, LedgerError
@@ -138,6 +138,29 @@ def latest_validated_ledger_index(client=None):
     return int(_request(Ledger(ledger_index="validated"), client)["ledger_index"])
 
 
+def get_transaction(tx_hash, client=None):
+    """Look a transaction up by hash. -> {'hash', 'validated', 'result', 'tx'}, or None when the network doesn't know it.
+
+    'result' is the engine result (e.g. tesSUCCESS) and 'tx' the transaction's XRPL JSON fields.
+    """
+    client = client or get_client()
+    try:
+        response = client.request(Tx(transaction=tx_hash))
+    except Exception as exc:
+        raise LedgerError.from_exception(exc) from exc
+    result = response.result
+    if not response.is_successful():
+        if result.get("error") == "txnNotFound":
+            return None
+        raise LedgerError(result.get("error", "unknown"), result.get("error_message"))
+    return {
+        "hash": result.get("hash", tx_hash),
+        "validated": bool(result.get("validated")),
+        "result": (result.get("meta") or {}).get("TransactionResult"),
+        "tx": result.get("tx_json") or result,
+    }
+
+
 def account_exists(address, client=None):
     try:
         _request(AccountInfo(account=address, ledger_index="validated"), client)
@@ -152,6 +175,18 @@ def fund_xrp(from_wallet, to_address, xrp):
     """Send `xrp` XRP from from_wallet to to_address (creates the account if it is new). -> tx hash"""
     tx = Payment(account=from_wallet.address, destination=to_address, amount=xrp_to_drops(Decimal(str(xrp))))
     return submit(tx, from_wallet)["hash"]
+
+
+def faucet_top_up(wallet, client=None):
+    """Ask the test network's faucet to send XRP to an existing wallet. Raises LedgerError when it refuses (rate limit)."""
+    for attempt in range(1, 4):
+        try:
+            generate_faucet_wallet(client or get_client(), wallet=wallet)
+            return
+        except Exception as exc:
+            if attempt == 3:
+                raise LedgerError("faucet_unavailable", "The test network's faucet is busy. Wait a minute and try again.") from exc
+            time.sleep(2 * attempt)
 
 
 def get_account_flags(address, client=None):
@@ -440,6 +475,23 @@ def get_escrow(owner, offer_sequence, client=None):
         "cancel_after": ripple_time_to_datetime(cancel).replace(tzinfo=dt_timezone.utc) if cancel is not None else None,
         "raw": node,
     }
+
+
+def find_escrow_create_hash(owner, destination, condition_hex, client=None):
+    """Hash of the EscrowCreate behind an escrow `owner` holds for `destination` under `condition_hex`, or None.
+
+    Used to recover when an escrow was created but its confirmation never reached us (network failure).
+    """
+    marker = None
+    while True:
+        request = AccountObjects(account=owner, type=AccountObjectType.ESCROW, ledger_index="validated", marker=marker)
+        result = _request(request, client)
+        for node in result.get("account_objects", []):
+            if node.get("Destination") == destination and (node.get("Condition") or "").upper() == condition_hex.upper():
+                return node.get("PreviousTxnID")
+        marker = result.get("marker")
+        if not marker:
+            return None
 
 
 def _require_before_deadline(cancel_after, client=None):

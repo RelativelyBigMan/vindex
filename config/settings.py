@@ -99,3 +99,15 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 X_FRAME_OPTIONS = "DENY"
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SESSION_COOKIE_SAMESITE = "Lax"
+
+# Show the app's own INFO lines (bot passes, setup threads) on the console.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s", "datefmt": "%H:%M:%S"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "loggers": {
+        "core": {"handlers": ["console"], "level": "INFO", "propagate": False},
+        "ledger": {"handlers": ["console"], "level": "INFO", "propagate": False},
+    },
+}

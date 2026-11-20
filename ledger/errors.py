@@ -40,7 +40,7 @@ class LedgerError(Exception):
     @classmethod
     def from_exception(cls, exc):
         """Build from an xrpl-py exception, pulling the engine result out of its text if there is one."""
-        text = str(exc)
+        text = str(exc) or type(exc).__name__  # timeouts often carry no text
         match = _ENGINE_RESULT.search(text)
         if match:
             return cls(match.group(1))
