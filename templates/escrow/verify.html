@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Verify a deposit{% endblock %}
+{% block meta_description %}Check a rental deposit directly on the XRP Ledger, without trusting safeDeposit.{% endblock %}
+
+{% block content %}
+<div data-verify-page data-lease-id="{{ lease_id }}">
+  <div class="proof-banner">
+    {% include "partials/_xrp_symbol.html" %}
+    <div>
+      <strong>Verified from the XRP Ledger, not from our database</strong>
+      <p class="small">Your browser asks a public {{ escrow_config.network.name }} server directly. safeDeposit only says where to look: addresses and the escrow's sequence number.</p>
+    </div>
+  </div>
+
+  <div class="page-header">
+    <h1>Deposit check</h1>
+    <p class="status-line" data-verify-status><span class="spinner" aria-hidden="true"></span> Connecting to the ledger…</p>
+  </div>
+
+  <section class="card" aria-labelledby="checks-heading">
+    <h2 id="checks-heading" class="card__title">What the ledger says</h2>
+    <ul class="checklist" data-checks></ul>
+    <div class="row mt-4"><button type="button" class="btn btn--ghost btn--sm" data-recheck hidden>Check again</button></div>
+  </section>
+
+  <div class="grid grid--2 mt-8">
+    <section class="card" aria-labelledby="v-escrow-heading">
+      <h2 id="v-escrow-heading" class="card__title">Escrow</h2>
+      <dl class="details" data-v-escrow></dl>
+    </section>
+    <section class="card" aria-labelledby="v-settlement-heading">
+      <h2 id="v-settlement-heading" class="card__title">Settlement account</h2>
+      <dl class="details" data-v-settlement></dl>
+    </section>
+  </div>
+
+  <section class="card mt-8">
+    <details>
+      <summary>Raw ledger data</summary>
+      <pre class="raw" data-raw tabindex="0">…</pre>
+    </details>
+  </section>
+</div>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/verify.js' %}"></script>{% endblock %}

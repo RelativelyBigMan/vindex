@@ -10,6 +10,8 @@ or landlord; seeds never leave it.
 import hashlib
 import json
 import logging
+import secrets
+import time as clock
 import uuid
 from datetime import datetime, time, timedelta
 from decimal import Decimal
@@ -18,10 +20,11 @@ from functools import wraps
 from django.conf import settings
 from django.core.cache import cache
 from django.db.models import Q
-from django.http import Http404, JsonResponse
+from django.http import FileResponse, Http404, JsonResponse
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
+from xrpl.core import keypairs
 from xrpl.core.addresscodec import is_valid_classic_address
 
 from ledger import services
@@ -46,6 +49,10 @@ FUND_XRP = Decimal("10")
 FUND_XRP_BELOW = Decimal("15")
 FUND_TOKENS = Decimal("5000")
 SERVER_SIDE_CODES = {"network_error", "unknown"}
+EVIDENCE_CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+ARBITER_CREDENTIAL = "VERIFIED_ARBITER"
+CREDENTIAL_TTL = 60  # seconds a credential reading may be reused
+CHALLENGE_TTL = 300  # seconds a wallet sign-in challenge stays valid
 
 
 # ---- plumbing ----
@@ -77,7 +84,7 @@ def api(*methods):
             except Exception:
                 log.exception("API error in %s", view.__name__)
                 return _error("Something went wrong on our side. Please try again.", "server_error", 500)
-            response = result if isinstance(result, JsonResponse) else JsonResponse(result)
+            response = result if isinstance(result, (JsonResponse, FileResponse)) else JsonResponse(result)
             response["Cache-Control"] = "no-store"
             return response
 
@@ -140,11 +147,44 @@ def _require_action(lease, party, action):
 
 # ---- serialisation ----
 
+def credential_issuer_address():
+    address = cache.get("credential-issuer")
+    if address is None:
+        row = PlatformWallet.objects.filter(role="credential_issuer").first()
+        address = row.address if row else ""
+        cache.set("credential-issuer", address, 300)
+    return address
+
+
+def verified_arbiter(address):
+    """True when the ledger holds an ACCEPTED arbiter credential from our registry for this address.
+
+    Read live and reused for a minute. None when the ledger can't be asked right now.
+    """
+    key = f"verified-arbiter:{address}"
+    verified = cache.get(key)
+    if verified is None:
+        issuer = credential_issuer_address()
+        try:
+            verified = bool(issuer) and any(
+                c["issuer"] == issuer and c["type"] == ARBITER_CREDENTIAL and c["accepted"]
+                for c in services.get_credentials(address)
+            )
+        except LedgerError:
+            return None
+        cache.set(key, verified, CREDENTIAL_TTL)
+    return verified
+
+
 def _party(party, role=None):
-    return {
-        "party_id": party.pk, "name": party.display_name, "role": role or party.role, "address": party.address,
-        "wallet_type": party.wallet_type, "explorer_url": explorer_account(party.address),
+    role = role or party.role
+    data = {
+        "party_id": party.pk, "name": party.display_name, "role": role, "address": party.address,
+        "wallet_type": party.wallet_type, "can_sign": bool(party.seed), "explorer_url": explorer_account(party.address),
     }
+    if role == Party.Role.ARBITER:
+        data["verified_arbiter"] = verified_arbiter(party.address)
+    return data
 
 
 def _balances(address):
@@ -220,8 +260,10 @@ def _event(event):
 
 def _evidence(item):
     return {
-        "id": item.pk, "kind": item.kind, "sha256": item.sha256, "url": item.file.url if item.file else None,
-        "uploaded_by": item.uploaded_by.display_name, "anchor_tx_hash": item.anchor_tx_hash,
+        "id": item.pk, "kind": item.kind, "kind_label": item.get_kind_display(), "sha256": item.sha256,
+        "url": f"/api/evidence/{item.pk}/file/" if item.file else None,  # parties only; never a public media URL
+        "uploaded_by": item.uploaded_by.display_name, "uploaded_by_id": item.uploaded_by_id,
+        "anchor_tx_hash": item.anchor_tx_hash,
         "explorer_url": explorer_tx(item.anchor_tx_hash) if item.anchor_tx_hash else None,
         "created_at": item.created_at.isoformat(),
     }
@@ -229,7 +271,8 @@ def _evidence(item):
 
 def _lease_summary(lease, party):
     return {
-        "id": str(lease.pk), "status": lease.status, "status_label": lease.get_status_display(),
+        "id": str(lease.pk), "title": lease.title, "scenario": lease.scenario,
+        "status": lease.status, "status_label": lease.get_status_display(),
         "setup_step": lease.setup_step, "release_reason": lease.release_reason, "error": lease.error,
         "amount": plain(lease.amount), "currency": lease.currency.code, "currency_label": lease.currency.label,
         "role": lease.role_of(party),
@@ -254,6 +297,7 @@ def lease_state(lease, party):
         **_lease_summary(lease, party),
         "issuer_address": lease.currency.issuer_address,
         "network": network_key(),
+        "me": _party(party, lease.role_of(party)) if lease.role_of(party) else None,
         "settlement": live["settlement"],
         "escrow": escrow,
         "seconds_to_cancel_after": max(0, int((lease.cancel_after - now).total_seconds())),
@@ -282,7 +326,14 @@ def demo_personas(request):
     """Not in the contract: the personas a demo session can switch between (ids for the persona switcher)."""
     _require_demo()
     parties = Party.objects.filter(wallet_type=Party.WalletType.DEMO).order_by("pk")
-    return {"personas": [_party(p) for p in parties], "current": current_party(request).pk}
+    personas = [_party(p) for p in parties]
+    if request.GET.get("balances"):
+        for persona in personas:
+            try:
+                persona["balances"] = _balances(persona["address"])
+            except LedgerError as exc:
+                persona["balances"], persona["balances_error"] = None, exc.message
+    return {"personas": personas, "current": current_party(request).pk}
 
 
 @api("POST")
@@ -331,30 +382,84 @@ def demo_run_bot(request):
     return {"processed": lifecycle.bot_pass()}
 
 
+def _challenge_text(nonce):
+    return f"safeDeposit sign-in on {network()['name']}. This signature proves you control this wallet. Nonce: {nonce}"
+
+
+@api("GET")
+def wallet_challenge(request):
+    """A one-time message for the browser wallet to sign, proving it controls its address."""
+    nonce = secrets.token_urlsafe(24)
+    request.session["wallet_challenge"] = {"nonce": nonce, "at": int(clock.time())}
+    # known_role lets the page ask a new wallet for its role BEFORE the single signature popup.
+    known = Party.objects.filter(address=str(request.GET.get("address") or "")).first()
+    return {"message": _challenge_text(nonce), "expires_in": CHALLENGE_TTL, "known_role": known.role if known else None}
+
+
+def _verify_wallet_signature(request, address, public_key, signature):
+    challenge = request.session.pop("wallet_challenge", None)  # one use only, whatever the outcome
+    if not challenge or clock.time() - challenge.get("at", 0) > CHALLENGE_TTL:
+        raise InvalidTransition("The sign-in request expired. Connect the wallet again.", "challenge_expired")
+    try:
+        owns_key = keypairs.derive_classic_address(str(public_key)) == address
+        signed = owns_key and keypairs.is_valid_message(
+            _challenge_text(challenge["nonce"]).encode("utf-8"), bytes.fromhex(str(signature)), str(public_key)
+        )
+    except Exception:  # malformed key or signature
+        signed = False
+    if not signed:
+        raise InvalidInput("The wallet's signature doesn't prove ownership of that address.", "bad_signature")
+
+
 @api("POST")
 def wallet_link(request):
     """Link a browser wallet's address to a Party (no seed on the server) and act as it.
 
-    Ownership of the address is NOT proven here; Patch 5 adds the signed challenge.
+    The wallet must sign the one-time challenge from GET /api/wallet/challenge/; the server checks the
+    signature and that the public key belongs to the address. Nothing secret leaves the wallet.
     """
     data = _body(request)
     address, role = str(data.get("address") or "").strip(), data.get("role")
     if not is_valid_classic_address(address):
         raise InvalidInput("That is not a valid XRP Ledger address.", "bad_address")
-    if role not in Party.Role.values:
-        raise InvalidInput("The role must be tenant, landlord or arbiter.", "bad_role")
+    _verify_wallet_signature(request, address, data.get("public_key"), data.get("signature"))
     party = Party.objects.filter(address=address).first()
     if party is None:
+        if role not in Party.Role.values:
+            raise InvalidInput("Choose whether this wallet is a tenant, landlord or arbiter.", "role_needed")
         party = Party.objects.create(
-            display_name=f"Wallet {address[:6]}…{address[-4:]}", role=role, address=address, seed=None,
+            display_name=_wallet_name(address), role=role, address=address, seed=None,
             wallet_type=Party.WalletType.GEMWALLET,
         )
     elif party.wallet_type == Party.WalletType.DEMO and not settings.DEMO_MODE:
         raise InvalidTransition("That address belongs to a demo persona.", "not_allowed")
-    elif party.role != role:
-        raise InvalidTransition(f"That address is already registered as a {party.role}.", "role_mismatch")
+    request.session.cycle_key()  # a new session id once the identity changes (session fixation)
     request.session["party_id"] = party.pk
     return _party(party)
+
+
+@api("POST")
+def wallet_unlink(request):
+    """Stop acting as a linked wallet (back to the default demo persona)."""
+    request.session.pop("party_id", None)
+    return {"ok": True}
+
+
+def _wallet_name(address):
+    return f"Wallet {address[:6]}…{address[-4:]}"
+
+
+@api("GET")
+def credentials(request, address):
+    """What the ledger says about an address's arbiter credential (for the lease form's warning)."""
+    if not is_valid_classic_address(address):
+        raise InvalidInput("That is not a valid XRP Ledger address.", "bad_address")
+    found = services.get_credentials(address)
+    issuer = credential_issuer_address()
+    return {
+        "address": address, "registry": issuer, "credentials": found,
+        "verified_arbiter": any(c["issuer"] == issuer and c["type"] == ARBITER_CREDENTIAL and c["accepted"] for c in found),
+    }
 
 
 # ---- leases ----
@@ -377,14 +482,41 @@ def _parse_end(data):
     return timezone.make_aware(end) if timezone.is_naive(end) else end
 
 
+def _pick_party(data, role):
+    """The landlord or arbiter of a new lease: a known party by id, or any ledger address pasted in.
+
+    A pasted address gets a Party without a key: it can receive payouts and be a signer on the
+    ledger, but the server can't approve splits for it.
+    """
+    address = str(data.get(f"{role}_address") or "").strip()
+    if not address:
+        party = Party.objects.filter(pk=_int(data.get(f"{role}_id"), f"{role}_id", 1, 2**31), role=role).first()
+        if party is None:
+            raise InvalidInput("Pick an existing landlord and an existing arbiter.", "unknown_party")
+        return party
+    if not is_valid_classic_address(address):
+        raise InvalidInput(f"The {role}'s address is not a valid XRP Ledger address.", "bad_address")
+    party = Party.objects.filter(address=address).first()
+    if party is None:
+        if not services.account_exists(address):
+            raise InvalidInput(f"The {role}'s address doesn't exist on {network()['name']} yet.", "unknown_account")
+        return Party.objects.create(
+            display_name=_wallet_name(address), role=role, address=address, seed=None, wallet_type=Party.WalletType.GEMWALLET
+        )
+    if party.role != role:
+        raise InvalidInput(f"That address is already registered as a {party.role}.", "role_mismatch")
+    return party
+
+
 def _create_lease(request, tenant):
     data = _body(request)
     if tenant.role != Party.Role.TENANT:
         raise InvalidTransition("Only a tenant can start a deposit. Switch to the tenant persona.", "not_allowed")
-    landlord = Party.objects.filter(pk=_int(data.get("landlord_id"), "landlord_id", 1, 2**31), role=Party.Role.LANDLORD).first()
-    arbiter = Party.objects.filter(pk=_int(data.get("arbiter_id"), "arbiter_id", 1, 2**31), role=Party.Role.ARBITER).first()
-    if landlord is None or arbiter is None:
-        raise InvalidInput("Pick an existing landlord and an existing arbiter.", "unknown_party")
+    landlord = _pick_party(data, Party.Role.LANDLORD)
+    arbiter = _pick_party(data, Party.Role.ARBITER)
+    title = " ".join(str(data.get("title") or "").split())
+    if len(title) > 120:
+        raise InvalidInput("Keep the property name under 120 characters.", "bad_title")
     if len({tenant.address, landlord.address, arbiter.address}) != 3:
         raise InvalidInput("Tenant, landlord and arbiter must be three different accounts.", "bad_signers")
     currency = Currency.objects.filter(code=str(data.get("currency") or "").upper()).first()
@@ -402,7 +534,8 @@ def _create_lease(request, tenant):
             "or there is no time to lock the deposit.", "bad_end",
         )
     lease = Lease.objects.create(
-        tenant=tenant, landlord=landlord, arbiter=arbiter, currency=currency, amount=amount, end_at=end_at, grace_minutes=grace
+        tenant=tenant, landlord=landlord, arbiter=arbiter, currency=currency, amount=amount, end_at=end_at,
+        grace_minutes=grace, title=title,
     )
     lifecycle.start_setup(lease)
     return JsonResponse({"lease_id": str(lease.pk)}, status=201)
@@ -445,6 +578,11 @@ def lease_public(request, lease_id):
         "arbiter_address": lease.arbiter.address, "settlement_address": lease.settlement_address,
         "escrow_owner": lease.escrow_owner, "escrow_sequence": lease.escrow_sequence,
         "currency": lease.currency.code, "issuer_address": lease.currency.issuer_address,
+        "credential_registry": credential_issuer_address(), "arbiter_credential": ARBITER_CREDENTIAL,
+        # Fingerprints only (they are public on the ledger already); the photos stay private.
+        "evidence": [
+            {"kind": e.kind, "sha256": e.sha256, "anchor_tx_hash": e.anchor_tx_hash} for e in lease.evidence.all() if e.anchor_tx_hash
+        ],
     }
 
 
@@ -486,6 +624,8 @@ def release_tx(request, lease_id):
     lease = _lease_for(lease_id, party)
     if lease.role_of(party) not in ("tenant", "landlord") or lease.status != Lease.Status.ACTIVE:
         raise InvalidTransition("Only the tenant or the landlord can release a locked deposit.", "not_allowed")
+    if party.wallet_type == Party.WalletType.DEMO and not settings.DEMO_MODE:
+        raise InvalidTransition("Demo mode is switched off on this server.", "demo_disabled")
     return {
         "tx": services.build_escrow_finish(
             party.address, lease.escrow_owner, lease.escrow_sequence, lease.condition_hex, lease.fulfillment_hex, lease.cancel_after
@@ -504,11 +644,12 @@ def release(request, lease_id):
     _require_action(lease, party, "release_early" if reason == Lease.ReleaseReason.EARLY_MOVE_OUT else "claim_damage")
     mode = data.get("mode", "demo")
     if mode == "wallet":
-        return _error("Releasing from your own wallet arrives with wallet signing (Patch 5).", "not_implemented", 501)
-    if mode != "demo":
+        lifecycle.register_wallet_release(lease, party, reason, data.get("tx_hash"))
+    elif mode == "demo":
+        _require_demo()
+        lifecycle.release(lease, party, reason)
+    else:
         raise InvalidInput("mode must be 'demo' or 'wallet'.", "bad_mode")
-    _require_demo()
-    lifecycle.release(lease, party, reason)
     return lease_state(lease, party)
 
 
@@ -557,4 +698,130 @@ def evidence(request, lease_id):
     upload.seek(0)
     item = Evidence(lease=lease, kind=kind, sha256=digest.hexdigest(), uploaded_by=party)
     item.file.save(f"{uuid.uuid4().hex}{extension}", upload)  # never trust the uploaded file name
-    return JsonResponse(_evidence(item), status=201)
+    data = {}
+    if party.seed and settings.DEMO_MODE:
+        try:
+            lifecycle.anchor_evidence_demo(item)
+        except LedgerError as exc:  # the photo is stored; anchoring can be retried
+            data["anchor_error"] = exc.message
+    return JsonResponse({**_evidence(item), **data}, status=201)
+
+
+def _evidence_for(evidence_id, party):
+    item = Evidence.objects.select_related("lease", "uploaded_by").filter(pk=evidence_id).first()
+    if item is None or item.lease.role_of(party) is None:
+        raise Http404
+    return item
+
+
+@api("GET")
+def evidence_file(request, evidence_id):
+    """The photo itself, for the lease's three parties only. Served as an image and nothing else."""
+    item = _evidence_for(evidence_id, current_party(request))
+    extension = "." + item.file.name.rsplit(".", 1)[-1].lower()
+    if extension not in EVIDENCE_CONTENT_TYPES or not item.file.storage.exists(item.file.name):
+        raise Http404
+    response = FileResponse(item.file.open("rb"), content_type=EVIDENCE_CONTENT_TYPES[extension])
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Content-Disposition"] = f'inline; filename="evidence-{item.pk}{extension}"'
+    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    return response
+
+
+@api("GET")
+def evidence_anchor_tx(request, evidence_id):
+    """Unsigned anchoring transaction (AccountSet + Memo) for the uploader's own wallet to sign."""
+    party = current_party(request)
+    item = _evidence_for(evidence_id, party)
+    if item.uploaded_by_id != party.pk or item.anchor_tx_hash:
+        raise InvalidTransition("Only the uploader can anchor a photo, and only once.", "not_allowed")
+    return {"tx": services.build_anchor_memo(party.address, lifecycle.EVIDENCE_MEMO_TYPE, lifecycle.evidence_memo(item))}
+
+
+@api("POST")
+def evidence_anchor(request, evidence_id):
+    """Anchor a stored photo's hash: {mode: 'demo'} (retry) or {mode: 'wallet', tx_hash}."""
+    party = current_party(request)
+    item = _evidence_for(evidence_id, party)
+    if item.uploaded_by_id != party.pk:
+        raise InvalidTransition("Only the uploader can anchor a photo.", "not_allowed")
+    data = _body(request)
+    if data.get("mode", "demo") == "wallet":
+        lifecycle.register_wallet_anchor(item, data.get("tx_hash"))
+    else:
+        _require_demo()
+        lifecycle.anchor_evidence_demo(item)
+    return _evidence(item)
+
+
+# ---- settlement inspector ----
+
+@api("GET")
+def settlement_raw(request, lease_id):
+    """The settlement account exactly as the validated ledger holds it (parties only)."""
+    party = current_party(request)
+    lease = _lease_for(lease_id, party)
+    if not lease.settlement_address:
+        raise InvalidTransition("The settlement account doesn't exist yet.", "wrong_status")
+    return {
+        "address": lease.settlement_address, "explorer_url": explorer_account(lease.settlement_address),
+        "currency": lease.currency.code, "issuer_address": lease.currency.issuer_address,
+        "raw": services.get_account_raw(lease.settlement_address),
+    }
+
+
+# ---- presenter view (demo mode) ----
+
+STAGE_STEPS = {"move_out", "landlord_approve", "arbiter_approve"}
+
+
+def _stage_state():
+    scenarios = {}
+    related = ("tenant", "landlord", "arbiter", "currency")
+    for letter in "ABC":
+        lease = Lease.objects.filter(scenario=letter, archived=False).select_related(*related).first()
+        if lease is None:
+            scenarios[letter] = None
+            continue
+        try:
+            scenarios[letter] = lease_state(lease, lease.arbiter if letter == "C" else lease.tenant)
+        except LedgerError as exc:
+            scenarios[letter] = {"id": str(lease.pk), "error": exc.message}
+    return {"scenarios": scenarios, "network": network_key()}
+
+
+@api("GET")
+def demo_stage(request):
+    _require_demo()
+    return _stage_state()
+
+
+@api("POST")
+def demo_stage_act(request):
+    """One presenter button: the server acts as the persona the step belongs to."""
+    _require_demo()
+    data = _body(request)
+    step = data.get("step")
+    if step not in STAGE_STEPS:
+        raise InvalidInput("Unknown step.", "bad_step")
+    lease = Lease.objects.select_related("tenant", "landlord", "arbiter", "currency").filter(
+        pk=str(data.get("lease_id") or ""), scenario__in=list("ABC")
+    ).first() if _is_uuid(data.get("lease_id")) else None
+    if lease is None:
+        raise Http404
+    if step == "move_out":
+        lifecycle.release(lease, lease.tenant, Lease.ReleaseReason.EARLY_MOVE_OUT)
+    else:
+        proposal = lifecycle.open_proposal(lease)
+        if proposal is None:
+            raise InvalidTransition("There is no open split to approve.", "no_proposal")
+        lifecycle.sign(proposal, lease.landlord if step == "landlord_approve" else lease.arbiter)
+    return _stage_state()
+
+
+def _is_uuid(value):
+    try:
+        uuid.UUID(str(value))
+        return True
+    except ValueError:
+        return False

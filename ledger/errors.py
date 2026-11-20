@@ -44,7 +44,8 @@ class LedgerError(Exception):
         match = _ENGINE_RESULT.search(text)
         if match:
             return cls(match.group(1))
-        return cls("network_error", f"Couldn't complete the ledger request: {text[:200]}")
+        # The raw text (DNS, TLS, timeouts) means nothing to a user; it is in the server log.
+        return cls("network_error", "The XRP Ledger test network can't be reached right now. Nothing was changed; try again in a moment.")
 
 
 class ExpiredPreparedTx(LedgerError):

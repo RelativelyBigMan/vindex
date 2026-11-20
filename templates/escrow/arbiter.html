@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Arbiter desk{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Arbiter desk</h1>
+  <p>Deposits in settlement where your signature can decide the split.</p>
+</div>
+
+<p class="alert alert--warning" data-not-arbiter hidden>
+  You are not acting as an arbiter. <button type="button" class="btn btn--ghost btn--sm" data-become-arbiter hidden>Act as the arbiter</button>
+</p>
+
+<div data-loading aria-hidden="true"><span class="skeleton skeleton--block"></span></div>
+<div class="stack-lg" data-cases></div>
+<div class="card empty" data-empty hidden><p>No deposits are waiting for a decision.</p></div>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/arbiter.js' %}"></script>{% endblock %}

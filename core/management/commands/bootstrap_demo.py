@@ -25,6 +25,8 @@ PERSONAS = [
 ]
 CURRENCIES = [("EUR", "EUR (test)", "issuer_eur"), ("USD", "USD (test)", "issuer_usd")]
 TOKEN_GRANTS = {"tenant": Decimal("5000"), "landlord": Decimal("1000")}
+ARBITER_CREDENTIAL = "VERIFIED_ARBITER"
+ARBITER_CREDENTIAL_URI = "safedeposit:mediation-registry"  # short and free of personal data: it is public forever
 
 
 class Command(BaseCommand):
@@ -63,6 +65,7 @@ class Command(BaseCommand):
                         self.step(f"{role}: issued {target - have} {code}", "done")
                     else:
                         self.step(f"{role}: holds {have} {code}", "enough")
+            self.arbiter_credential(wallets["credential_issuer"], parties["arbiter"])
         except LedgerError as exc:
             raise CommandError(f"Ledger error ({exc.engine_result}): {exc.message}") from exc
 
@@ -72,6 +75,30 @@ class Command(BaseCommand):
     # ---- helpers ----
     def step(self, text, state):
         self.stdout.write(f"  {text}: {state}")
+
+    def arbiter_credential(self, registry, arbiter):
+        """The mediation registry vouches for the arbiter with an XRPL Credential; the arbiter accepts it."""
+        def held():
+            return next(
+                (c for c in services.get_credentials(arbiter.address, self.client)
+                 if c["issuer"] == registry.address and c["type"] == ARBITER_CREDENTIAL), None,
+            )
+
+        try:
+            credential = held()
+            if credential is None:
+                services.issue_credential(registry, arbiter.address, ARBITER_CREDENTIAL, ARBITER_CREDENTIAL_URI)
+                credential = held()
+                self.step("arbiter credential", "issued by the registry")
+            if credential and not credential["accepted"]:
+                services.accept_credential(arbiter, registry.address, ARBITER_CREDENTIAL)
+                self.step("arbiter credential", "accepted by the arbiter")
+            else:
+                self.step("arbiter credential", "already accepted")
+        except LedgerError as exc:
+            if exc.engine_result != "temDISABLED":
+                raise
+            self.stdout.write(self.style.WARNING("  Credentials are disabled on this network; the arbiter shows as unverified."))
 
     def faucet(self, wallet=None):
         """Ask the faucet for XRP (new wallet, or top up `wallet`), retrying with backoff when rate-limited."""

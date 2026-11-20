@@ -1,87 +1,181 @@
 /**
- * Wallet adapter layer.
+ * Wallet adapter layer. The UI talks to this interface, never to a specific wallet.
  *
- * The UI only talks to this interface, never to a specific wallet. Once the
- * escrow mechanism is chosen (e.g. XRPL multisig or an EVM contract), add an
- * adapter per wallet (GemWallet, Crossmark, Xaman, ...) and register it.
- * The rest of the frontend doesn't need to change.
+ *   isAvailable() -> boolean         connect() -> address          getNetwork() -> "Testnet" | …
+ *   signAndSubmit(txJson) -> {hash}  signMessage(text) -> {signature, publicKey, address}
  *
- * Security rules every adapter MUST follow:
+ * Adapters: DemoWallet (the server signs with the persona's Testnet key through the demo
+ * endpoints) and GemWallet (browser extension, via the self-hosted @gemwallet/api build).
+ *
+ * Security rules every adapter follows:
  *  - Never request, accept, store or transmit a seed, secret or private key.
  *    Signing happens inside the user's wallet only.
- *  - Never persist anything except the public address.
- *  - Reject when the wallet's network doesn't match config.network.id.
+ *  - Nothing is persisted in the browser; the server session remembers the linked address.
+ *  - Refuse when the wallet's network isn't the one this site runs on.
  */
+import { get, post } from "./api.js";
+import { config, currentMe, loadMe } from "./session.js";
 
-/** @typedef {{ address: string, network: string }} WalletSession */
+const VENDOR = {
+  gemwallet: "vendor/gemwallet-api-3.8.0.js",
+  xrpl: "vendor/xrpl-5.3.0.min.js",
+};
+
+const loading = new Map();
+
+/** Load a self-hosted classic script once (CSP: script-src 'self'). */
+export function loadVendor(name) {
+  if (!loading.has(name)) {
+    loading.set(name, new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = (document.body.dataset.static || "/static/") + VENDOR[name];
+      script.onload = () => resolve();
+      script.onerror = () => {
+        loading.delete(name);
+        reject(new Error(`Couldn't load ${VENDOR[name]}. Run scripts/fetch_vendor.py on the server.`));
+      };
+      document.head.append(script);
+    }));
+  }
+  return loading.get(name);
+}
+
+export class WalletError extends Error {}
 
 export class WalletAdapter {
-  /** @param {string} id  @param {string} name */
   constructor(id, name) {
     this.id = id;
     this.name = name;
   }
-
-  /** @returns {Promise<boolean>} true if the wallet is installed or reachable. */
   async isAvailable() { return false; }
-
-  /** @returns {Promise<WalletSession>} */
-  async connect() { throw new Error(`${this.name}: connect() not implemented`); }
-
-  async disconnect() {}
-
-  /**
-   * Ask the wallet to sign (and optionally submit) a transaction.
-   * The payload shape is decided by the escrow implementation later.
-   * @param {object} _tx
-   * @returns {Promise<{ hash?: string, signed?: string }>}
-   */
-  async sign(_tx) { throw new Error(`${this.name}: sign() not implemented`); }
+  /** @returns {Promise<string>} the wallet's classic address */
+  async connect() { throw new WalletError(`${this.name} can't connect.`); }
+  async getNetwork() { return config.network.name; }
+  /** @returns {Promise<{hash: string}>} */
+  async signAndSubmit(_tx) { throw new WalletError(`${this.name} can't sign transactions in the browser.`); }
+  async signMessage(_message) { throw new WalletError(`${this.name} can't sign messages.`); }
 }
 
-/** @type {Map<string, WalletAdapter>} */
-const adapters = new Map();
-
-/** @param {WalletAdapter} adapter */
-export function registerAdapter(adapter) {
-  if (!(adapter instanceof WalletAdapter)) throw new TypeError("Adapter must extend WalletAdapter");
-  adapters.set(adapter.id, adapter);
+/** Demo personas: keys live on the server (Testnet only), so pages call the demo endpoints instead of signing here. */
+export class DemoWallet extends WalletAdapter {
+  constructor() { super("demo", "Demo persona"); }
+  async isAvailable() { return Boolean(config.demo_mode); }
+  async connect() { return (await loadMe()).address; }
 }
 
-/** @returns {Promise<WalletAdapter[]>} adapters that are actually usable in this browser. */
-export async function availableAdapters() {
-  const list = [...adapters.values()];
-  const checks = await Promise.all(list.map((a) => a.isAvailable().catch(() => false)));
-  return list.filter((_, i) => checks[i]);
+export class GemWallet extends WalletAdapter {
+  constructor() { super("gemwallet", "GemWallet"); }
+
+  async sdk() {
+    await loadVendor("gemwallet");
+    if (!window.GemWalletApi) throw new WalletError("The GemWallet API didn't load.");
+    return window.GemWalletApi;
+  }
+
+  async isAvailable() {
+    try {
+      const response = await (await this.sdk()).isInstalled();
+      return Boolean(response?.result?.isInstalled);
+    } catch {
+      return false;
+    }
+  }
+
+  static result(response, what) {
+    if (!response || response.type === "reject" || !response.result) {
+      throw new WalletError(`${what} was declined in GemWallet.`);
+    }
+    return response.result;
+  }
+
+  async connect() {
+    const sdk = await this.sdk();
+    return GemWallet.result(await sdk.getAddress(), "Sharing the address").address;
+  }
+
+  async getNetwork() {
+    const sdk = await this.sdk();
+    return String(GemWallet.result(await sdk.getNetwork(), "Reading the network").network || "");
+  }
+
+  async signAndSubmit(tx) {
+    const sdk = await this.sdk();
+    // The wallet adds its own signature fields; ours are placeholders from the server's autofill.
+    const { SigningPubKey: _key, TxnSignature: _signature, ...transaction } = tx;
+    const result = GemWallet.result(await sdk.submitTransaction({ transaction }), "The transaction");
+    if (!result.hash) throw new WalletError("GemWallet didn't return a transaction hash.");
+    return { hash: result.hash };
+  }
+
+  async signMessage(message) {
+    const sdk = await this.sdk();
+    const key = GemWallet.result(await sdk.getPublicKey(), "Sharing the public key");
+    const signed = GemWallet.result(await sdk.signMessage(message), "Signing in");
+    return { signature: signed.signedMessage, publicKey: key.publicKey, address: key.address };
+  }
 }
 
-/* ---- Session state (in memory only, cleared on reload) ---- */
+const adapters = new Map([["demo", new DemoWallet()], ["gemwallet", new GemWallet()]]);
+export const adapter = (id) => adapters.get(id);
 
-/** @type {{ adapter: WalletAdapter | null, session: WalletSession | null }} */
-const state = { adapter: null, session: null };
-
-export function currentSession() { return state.session; }
-export function currentAdapter() { return state.adapter; }
+function assertNetwork(walletNetwork) {
+  if (String(walletNetwork).toLowerCase() !== String(config.network.name).toLowerCase()) {
+    throw new WalletError(`Your wallet is on "${walletNetwork || "another network"}". Switch it to ${config.network.name} and try again.`);
+  }
+}
 
 /**
- * @param {WalletAdapter} adapter
- * @param {string} expectedNetwork
+ * Connect GemWallet and prove ownership of its address to the server with one signed challenge.
+ * @param {(known: string|null) => Promise<string|null>} askRole  called for a wallet the server hasn't seen
  */
-export async function connectWith(adapter, expectedNetwork) {
-  const session = await adapter.connect();
-  if (expectedNetwork && session.network !== expectedNetwork) {
-    await adapter.disconnect().catch(() => {});
-    throw new Error(`Wrong network: wallet is on "${session.network}", this site needs "${expectedNetwork}".`);
+export async function connectBrowserWallet(askRole) {
+  const wallet = adapters.get("gemwallet");
+  if (!(await wallet.isAvailable())) {
+    throw new WalletError("GemWallet wasn't found in this browser. Install the extension, or keep using the demo personas.");
   }
-  state.adapter = adapter;
-  state.session = session;
-  document.dispatchEvent(new CustomEvent("wallet:connected", { detail: session }));
-  return session;
+  const address = await wallet.connect();
+  assertNetwork(await wallet.getNetwork());
+  const challenge = await get(`/api/wallet/challenge/?address=${encodeURIComponent(address)}`);
+  let role = challenge.known_role;
+  if (!role) {
+    role = await askRole(null);
+    if (!role) throw new WalletError("No role chosen; the wallet wasn't connected.");
+  }
+  const proof = await wallet.signMessage(challenge.message);
+  if (proof.address !== address) throw new WalletError("The wallet switched accounts during sign-in. Try again.");
+  await post("/api/wallet/link/", { address, role, public_key: proof.publicKey, signature: proof.signature });
+  return loadMe(true);
 }
 
-export async function disconnect() {
-  if (state.adapter) await state.adapter.disconnect().catch(() => {});
-  state.adapter = null;
-  state.session = null;
-  document.dispatchEvent(new CustomEvent("wallet:disconnected"));
+export async function disconnectBrowserWallet() {
+  await post("/api/wallet/unlink/");
+  return loadMe(true);
+}
+
+/** The adapter for whoever this session acts as, checked against the live wallet for browser wallets. */
+export async function walletFor(me = currentMe()) {
+  if (!me || me.wallet_type === "demo") return adapters.get("demo");
+  const wallet = adapters.get("gemwallet");
+  if (!(await wallet.isAvailable())) throw new WalletError("GemWallet isn't available in this browser.");
+  const address = await wallet.connect();
+  if (address !== me.address) {
+    throw new WalletError("GemWallet is on a different account than the one you connected. Switch accounts in the wallet, or reconnect.");
+  }
+  assertNetwork(await wallet.getNetwork());
+  return wallet;
+}
+
+/** After the wallet submitted a transaction, the server needs a few seconds until it is validated. */
+export async function registerWhenValidated(send, tries = 8) {
+  let last;
+  for (let attempt = 0; attempt < tries; attempt += 1) {
+    try {
+      return await send();
+    } catch (error) {
+      last = error;
+      if (error.status !== 400) break;
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+    }
+  }
+  throw last;
 }

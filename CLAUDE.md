@@ -60,7 +60,9 @@ config/ (settings, urls) | core/ (models, lifecycle.py, api.py, views.py, manage
 - POST /api/leases/<id>/proposals/ {tenant_amount, landlord_amount, reason}
 - POST /api/proposals/<id>/sign/
 - POST /api/leases/<id>/evidence/ (multipart: file, kind)
-- POST /api/wallet/link/ {address, role}
+- GET  /api/wallet/challenge/?address= -> {message, known_role}; POST /api/wallet/link/ {address, role, public_key, signature} (signed challenge required); POST /api/wallet/unlink/
+- Added in Patches 4-7: GET /api/demo/personas/ (?balances=1), GET /api/credentials/<address>/, GET /api/leases/<id>/settlement/ (raw ledger data), GET /api/evidence/<id>/file/ (parties only), GET /api/evidence/<id>/anchor-tx/, POST /api/evidence/<id>/anchor/ {mode, tx_hash?}, GET /api/demo/stage/, POST /api/demo/stage/act/ {lease_id, step}
+- POST /api/leases/ also takes title, and landlord_address / arbiter_address instead of the ids (a pasted address becomes a keyless Party).
 - Errors: {error: friendly message, code: engine result or internal code} with HTTP 400 / 409 / 500.
 - Action names used in 'actions': lock_deposit, release_early, claim_damage, propose, sign:<proposal_id>, upload_evidence, share_verify.
 
@@ -92,3 +94,13 @@ config/ (settings, urls) | core/ (models, lifecycle.py, api.py, views.py, manage
   - `services.submit()` no longer uses xrpl-py's submit_and_wait: it fails at once on tem / tef / tel results instead of polling until LastLedgerSequence.
   - `build_escrow_finish` returns the fulfillment inside the tx JSON: tenant / landlord only, never log it.
   - Memos are public and permanent: anchor hashes and ids only, never names or other personal data.
+- Patch 3 (lifecycle, API, bot): done 2026-11-20.
+- Patches 4-7 (UI, wallet + verify, evidence + credential, demo stage + README): done 2026-11-20, in one session. Notes:
+  - Pages are shells (core/views.py); static/js/pages/*.js render from the API. Shared pieces: ui.js (el, toast, busy, fill), parts.js, actions.js, splitform.js. Never innerHTML; never pass null to replaceChildren (use ui.fill).
+  - runserver runs with --noreload in .claude/launch.json: restart it after Python changes. Browsers cache ES modules: hard-reload after JS changes.
+  - CSP is set in core/middleware.py; a new external host needs an entry there (currently only the network's WebSocket).
+  - Wallet parties (Party.seed null) can propose but not sign; allowed_actions never offers them sign:<id>.
+  - GemWallet 3.8.0 can't multisign. Its licence restricts redistribution, so static/vendor/gemwallet-api-*.js is git-ignored and fetched by scripts/fetch_vendor.py.
+  - Lease has title (off-chain label) and scenario (A/B/C, set by demo_scenarios; the stage view reads the newest of each).
+  - Countdowns keep the earliest computed deadline: slow poll answers must never move it later.
+  - Not done: Batch payouts (amendment off on Testnet), Crossmark, a click-through with the real GemWallet extension.
