@@ -9,16 +9,32 @@ This repo is **frontend only** so far. It's laid out the way Django expects, so 
 ```
 templates/
   base.html                  global page template (blocks: title, meta_description, body_class, extra_css, content, extra_js)
-  partials/                  header, footer, messages, status badge
+  partials/                  header, footer, messages, status badge, official XRP symbol
   escrow/                    home, dashboard, lease_create, lease_detail
   legal/                     terms, privacy (placeholders, need legal review)
 static/
-  css/global.css             global stylesheet: design tokens, light/dark, components
+  css/global.css             "whitepaper" theme: XRP brand palette + LaTeX typesetting, light/dark, animations
+  fonts/                     SD Modern (subset of Latin Modern, GUST Font License; see README-fonts.txt)
   js/app.js                  global behaviour (wallet UI, confirms, copy, amount validation)
+  js/fx.js                   decorative motion (scroll reveals, count-ups, ripples); off for reduced motion
+  js/sound.js                soft synthesised click sounds with a mute toggle (no audio files)
   js/wallet.js               wallet adapter interface (no wallet wired in yet)
 ```
 
 New pages: `{% extends "base.html" %}` and fill `{% block content %}`.
+
+Whitepaper building blocks for templates: `.sec` + `.sec__title` (auto-numbered sections),
+`.defn` / `.defn--theorem` (numbered definitions), `.equation` + `.math` (numbered display maths;
+add `.equation--type` to type it in), `.stats`, `.titleblock`, `.abstract`.
+
+## Branding rules (XRP Brand Toolkit 2026)
+
+- The XRP "X" symbol (`partials/_xrp_symbol.html`) is the official path, unmodified. Black or white only,
+  at least 20px tall, with clear space of 0.25 x its height. Use it only for "Built on the XRP Ledger",
+  never inside the safeDeposit logo.
+- Palette: white / Grey 5 `#F0F3F7` backgrounds, Black `#141414` text, Green `#21E46B` accents
+  (green fills take black text; green *text* uses Dark Green `#078139` for contrast).
+- The footer states the project isn't affiliated with Ripple or the XRP Ledger Foundation. Keep that line.
 
 ## What Django needs to provide later
 

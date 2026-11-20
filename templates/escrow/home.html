@@ -1,50 +1,87 @@
 {% extends "base.html" %}
 
-{% block title %}Rental deposits, protected{% endblock %}
+{% block title %}Rental deposits, settled by consensus{% endblock %}
 
 {% block content %}
-<section class="hero">
-  <p class="hero__eyebrow">safeDeposit</p>
-  <h1 class="hero__title">Your deposit.<br>Safe until it's settled.</h1>
-  <p class="hero__lead">The tenant's deposit is held in escrow for the whole stay. When the lease ends, any two of the tenant, the owner and an independent arbiter decide where it goes.</p>
+<header class="titleblock">
+  <p class="titleblock__kicker">A protocol for rental deposits</p>
+  <h1 class="titleblock__title">
+    <span class="line"><span>Deposits held in escrow.</span></span>
+    <span class="line"><span>Released by consensus.</span></span>
+  </h1>
+  <p class="titleblock__authors">Tenant<sup>1</sup> &middot; Owner<sup>2</sup> &middot; Arbiter<sup>3</sup></p>
+  <p class="titleblock__affil"><sup>1</sup>pays the deposit &ensp; <sup>2</sup>owns the property &ensp; <sup>3</sup>independent of both</p>
+  <p class="titleblock__date">Settled in {{ escrow_config.currency.code|default:"stablecoin" }} on the XRP Ledger</p>
   <div class="row">
-    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow</a>
-    <a class="link-more" href="#how-heading">See how it works</a>
+    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow <span class="btn__arrow" aria-hidden="true">&rarr;</span></a>
+    <a class="link-more" href="#protocol">Read the protocol</a>
   </div>
+
+  {# Original decorative artwork: three parties' paths meeting in one decision. #}
+  <svg class="flow" viewBox="0 0 640 120" aria-hidden="true" focusable="false">
+    <path pathLength="1" d="M8 20 C 180 20, 220 60, 320 60 S 460 60, 632 60"/>
+    <path pathLength="1" d="M8 60 C 160 60, 220 60, 320 60"/>
+    <path pathLength="1" d="M8 100 C 180 100, 220 60, 320 60"/>
+    <circle cx="8" cy="20" r="5"/>
+    <circle cx="8" cy="60" r="5"/>
+    <circle cx="8" cy="100" r="5"/>
+  </svg>
+
+  <div class="stats" role="list">
+    <div role="listitem"><span class="stats__num" data-count="3">3</span><span class="stats__label">parties</span></div>
+    <div role="listitem"><span class="stats__num" data-count="2">2</span><span class="stats__label">matching votes</span></div>
+    <div role="listitem"><span class="stats__num" data-count="1">1</span><span class="stats__label">final decision</span></div>
+  </div>
+</header>
+
+<section class="abstract" aria-labelledby="abstract-label">
+  <span class="abstract__label" id="abstract-label">Abstract</span>
+  <p>Rental deposits are usually held by one side of the agreement. safeDeposit holds the tenant's deposit in escrow for the whole lease instead. When the lease ends, the tenant, the owner and an independent arbiter each vote, and any two matching votes decide where the deposit goes. No single party can release it alone.</p>
 </section>
 
-<section class="section" aria-labelledby="how-heading">
-  <h2 id="how-heading" class="section__title">Three steps. No surprises.</h2>
+<section class="sec" id="protocol" aria-labelledby="sec-protocol">
+  <h2 class="sec__title" id="sec-protocol">The protocol</h2>
   <div class="grid grid--3">
-    <article class="card tile">
-      <p class="tile__number" aria-hidden="true">01</p>
-      <h3>Set up</h3>
-      <p>The owner creates the escrow with the lease dates, the deposit and the wallets of all three parties.</p>
-    </article>
-    <article class="card tile">
-      <p class="tile__number" aria-hidden="true">02</p>
-      <h3>Deposit</h3>
-      <p>The tenant pays in {{ escrow_config.currency.code|default:"stablecoin" }}. Nobody can move it alone.</p>
-    </article>
-    <article class="card tile">
-      <p class="tile__number" aria-hidden="true">03</p>
-      <h3>Decide</h3>
-      <p>At the end of the lease, each party votes. Two matching votes release the deposit.</p>
-    </article>
+    <div class="defn">
+      <p class="defn__head"><span class="defn__name">(Escrow)</span></p>
+      <p class="defn__body">The owner opens an escrow with the lease dates, the deposit amount and the wallets of all three parties.</p>
+    </div>
+    <div class="defn">
+      <p class="defn__head"><span class="defn__name">(Deposit)</span></p>
+      <p class="defn__body">The tenant pays the deposit in {{ escrow_config.currency.code|default:"stablecoin" }} from their own wallet. It stays locked for the lease.</p>
+    </div>
+    <div class="defn">
+      <p class="defn__head"><span class="defn__name">(Decision)</span></p>
+      <p class="defn__body">At the end of the lease each party votes <span class="math">d</span> = tenant or <span class="math">d</span> = owner.</p>
+    </div>
   </div>
 </section>
 
-<section class="band" aria-labelledby="rule-heading">
-  <p class="band__stat" aria-hidden="true">2&nbsp;of&nbsp;3</p>
-  <h2 id="rule-heading" class="band__title">One simple rule settles every deposit.</h2>
-  <p>Tenant and owner agree, and it's done. If they don't, the arbiter breaks the tie. No single party can release the deposit alone.</p>
+<section class="sec" aria-labelledby="sec-rule">
+  <h2 class="sec__title" id="sec-rule">The release rule</h2>
+  <div class="prose">
+    <p>Let <span class="math">v<sub>p</sub></span> be the vote of party <span class="math">p</span>, one of tenant, owner or arbiter. Count the votes for an outcome <span class="math">d</span>:</p>
+  </div>
+  <div class="equation equation--type">
+    <span class="math"><span class="op">votes</span>(d) <span class="op">=</span> <span class="op">|{</span> p <span class="op">:</span> v<sub>p</sub> <span class="op">=</span> d <span class="op">}|</span></span>
+  </div>
+  <div class="defn defn--theorem">
+    <p class="defn__head"><span class="defn__name">(Two of three)</span></p>
+    <p class="defn__body">The deposit is released to <span class="math">d</span> as soon as more than one party agrees:</p>
+    <div class="equation equation--type">
+      <span class="math"><span class="op">votes</span>(d) <span class="op">&gt; 1 &rarr; release</span>(d)</span>
+    </div>
+  </div>
+  <div class="prose mt-8">
+    <p>If tenant and owner agree, it's settled with no arbiter needed. If they disagree, the arbiter's vote decides. Every vote is signed in the voter's own wallet.<span class="fnref">&dagger;</span></p>
+  </div>
 </section>
 
-<section class="section center">
-  <h2>Ready when you are.</h2>
-  <div class="row row--center mt-8">
-    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow</a>
-    <a class="link-more" href="{% url 'escrow:dashboard' %}">View my leases</a>
+<section class="sec center" aria-labelledby="sec-start">
+  <h2 class="sec__title sec__title--center" id="sec-start">Get started</h2>
+  <div class="row row--center">
+    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow <span class="btn__arrow" aria-hidden="true">&rarr;</span></a>
+    <a class="btn btn--ghost btn--lg" href="{% url 'escrow:dashboard' %}">View my leases</a>
   </div>
 </section>
 {% endblock %}

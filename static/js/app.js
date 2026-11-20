@@ -4,6 +4,8 @@
  * Untrusted text is always written with textContent, never innerHTML.
  */
 import { availableAdapters, connectWith, disconnect, currentSession } from "./wallet.js";
+import { initSound } from "./sound.js";
+import { initFx } from "./fx.js";
 
 /* ---------- Config (from Django via json_script) ---------- */
 function readConfig() {
@@ -104,6 +106,11 @@ function initCopy() {
     try {
       await navigator.clipboard.writeText(btn.dataset.copy || "");
       notify("Copied to clipboard.", "success");
+      // Brief "Copied" label on the button itself, then restore.
+      btn.dataset.label ||= btn.textContent;
+      btn.textContent = "Copied";
+      clearTimeout(Number(btn.dataset.timer));
+      btn.dataset.timer = String(setTimeout(() => { btn.textContent = btn.dataset.label; }, 1400));
     } catch {
       notify("Copy failed. Select the text and copy it manually.", "warning");
     }
@@ -146,6 +153,8 @@ function init() {
   initCopy();
   initConfirm();
   initAmountInputs();
+  initSound();
+  initFx();
   renderWallet();
 }
 

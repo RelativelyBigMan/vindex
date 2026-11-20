@@ -1,14 +1,22 @@
 <footer class="site-footer">
   <div class="container site-footer__inner">
-    <p class="muted small">
-      safeDeposit is software for holding deposits. It is not a bank, a law firm or a financial adviser.
-      safeDeposit will never ask for your wallet secret, seed phrase or private key.
-    </p>
-    <nav aria-label="Legal">
-      <ul class="inline-list small">
-        <li><a href="{% url 'legal:terms' %}">Terms</a></li>
-        <li><a href="{% url 'legal:privacy' %}">Privacy</a></li>
-      </ul>
-    </nav>
+    <div class="site-footer__rule" aria-hidden="true"></div>
+    <ol class="footnotes">
+      <li data-mark="*">safeDeposit is software for holding deposits. It is not a bank, a law firm or a financial adviser.</li>
+      <li data-mark="&dagger;">safeDeposit will never ask for your wallet secret, seed phrase or private key.</li>
+      <li data-mark="&Dagger;">An independent hackathon project. Not affiliated with, endorsed or sponsored by Ripple or the XRP Ledger Foundation. XRP and XRP Ledger marks belong to their respective owners.</li>
+    </ol>
+    <div class="site-footer__bottom">
+      <a class="built-on" href="https://xrpl.org/" rel="noopener noreferrer" target="_blank">
+        {% include "partials/_xrp_symbol.html" %}
+        <span>Built on the XRP Ledger</span><span class="visually-hidden"> (opens in a new tab)</span>
+      </a>
+      <nav aria-label="Legal">
+        <ul class="inline-list">
+          <li><a href="{% url 'legal:terms' %}">Terms</a></li>
+          <li><a href="{% url 'legal:privacy' %}">Privacy</a></li>
+        </ul>
+      </nav>
+    </div>
   </div>
 </footer>

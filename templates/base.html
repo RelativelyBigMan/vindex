@@ -8,11 +8,14 @@
   {# No external fonts, scripts or trackers: keeps the page CSP-friendly and avoids leaking visitor IPs to third parties (GDPR). #}
   <title>{% block title %}safeDeposit{% endblock %} · safeDeposit</title>
   <meta name="description" content="{% block meta_description %}Rental deposits held in escrow and released by a 2-of-3 decision between tenant, owner and an independent arbiter.{% endblock %}">
+  {# Self-hosted fonts (subset of Latin Modern, GUST licence). Preload the body face so text doesn't reflow. #}
+  <link rel="preload" href="{% static 'fonts/sdmodern-roman-regular.woff2' %}" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="{% static 'css/global.css' %}">
   {% block extra_css %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
   <a class="skip-link" href="#main">Skip to content</a>
+  <div class="scroll-progress" aria-hidden="true"></div>
 
   {% include "partials/_header.html" %}
 
