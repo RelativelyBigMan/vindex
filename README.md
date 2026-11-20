@@ -65,7 +65,7 @@ static/js/     app.js (global), api.js, ui.js, poll.js, session.js, wallet.js (a
                actions.js, parts.js, splitform.js, dec.js, fx.js, sound.js, pages/
 static/css/    global.css ("whitepaper" theme)
 static/vendor/ xrpl.js 5.3.0 (committed), @gemwallet/api 3.8.0 (fetched by scripts/fetch_vendor.py)
-scripts/       api_walkthrough.py, wallet_walkthrough.py, fetch_vendor.py
+scripts/       setup.py (cross-platform setup), api_walkthrough.py, wallet_walkthrough.py, fetch_vendor.py
 ```
 
 Pages are shells; each page's module renders from the JSON API. What a persona may do comes only from the API's
@@ -73,23 +73,40 @@ Pages are shells; each page's module renders from the JSON API. What a persona m
 
 ## Setup
 
+Needs Python 3.11 or newer and git. One script does the setup on Windows 11, macOS and Linux (virtual environment,
+packages, `.env` with a fresh secret key, browser libraries, database). It is safe to rerun.
+
+Windows 11 (PowerShell or Command Prompt):
+
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env                         # then set DJANGO_SECRET_KEY to a long random string
-.venv/bin/python scripts/fetch_vendor.py     # browser libraries, checked against pinned SHA-256
-.venv/bin/python manage.py migrate
-.venv/bin/python manage.py bootstrap_demo    # wallets, personas, test EUR/USD, arbiter credential (safe to rerun)
-.venv/bin/python manage.py preflight         # proves token escrow works on the network
-.venv/bin/python manage.py runserver         # terminal 1 -> http://127.0.0.1:8000
-.venv/bin/python manage.py run_bot           # terminal 2: returns deposits after their return date
-.venv/bin/python manage.py demo_scenarios    # stages leases A, B, C and prints their URLs
+py scripts\setup.py --demo
 ```
+
+macOS / Linux:
+
+```bash
+python3 scripts/setup.py --demo
+```
+
+`--demo` also creates the demo wallets on the XRPL test network and runs the preflight check (about 2 minutes, needs
+internet). Then run the app, each command in its own terminal. On Windows the virtual environment's Python is
+`.venv\Scripts\python`; on macOS / Linux it is `.venv/bin/python`.
+
+| Step | Windows 11 | macOS / Linux |
+|---|---|---|
+| Web app, http://127.0.0.1:8000 | `.venv\Scripts\python manage.py runserver` | `.venv/bin/python manage.py runserver` |
+| Return bot | `.venv\Scripts\python manage.py run_bot` | `.venv/bin/python manage.py run_bot` |
+| Stage leases A, B, C | `.venv\Scripts\python manage.py demo_scenarios` | `.venv/bin/python manage.py demo_scenarios` |
+
+Doing it by hand instead: create a virtual environment, `pip install -r requirements.txt`, copy `.env.example` to
+`.env` and set `DJANGO_SECRET_KEY`, then run `scripts/fetch_vendor.py`, `manage.py migrate`, `manage.py bootstrap_demo`
+and `manage.py preflight` with the virtual environment's Python.
 
 Keep `DJANGO_DEBUG=1` for local demos (runserver serves the static files). If preflight says token escrow is disabled,
 set `XRPL_NETWORK=devnet` and rerun `bootstrap_demo`. Demo keys live in `db.sqlite3` (git-ignored); they are Testnet
 keys with no value, and the app refuses to start against mainnet.
 
-Checks:
+Checks (shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead of `.venv/bin/python`):
 
 ```bash
 .venv/bin/python manage.py test                       # 90 tests, no network
