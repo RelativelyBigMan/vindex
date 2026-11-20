@@ -25,7 +25,7 @@
     <div class="field">
       <label for="id_property_address">Property address</label>
       <textarea id="id_property_address" name="property_address" required maxlength="500" aria-describedby="addr-help">{{ form.property_address.value|default_if_none:'' }}</textarea>
-      <small id="addr-help">Stored privately by Decelsus and never written to the blockchain.</small>
+      <small id="addr-help">Stored privately by safeDeposit and never written to the blockchain.</small>
       {{ form.property_address.errors }}
     </div>
     <div class="grid grid--2">

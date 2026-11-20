@@ -1,32 +1,50 @@
 {% extends "base.html" %}
 
-{% block title %}Rental deposits in escrow{% endblock %}
+{% block title %}Rental deposits, protected{% endblock %}
 
 {% block content %}
 <section class="hero">
-  <h1>Rental deposits nobody can run off with</h1>
-  <p>The tenant's deposit sits in escrow for the length of the stay. When the lease ends, the tenant, the owner and an independent arbiter vote, and any two of them decide where the money goes.</p>
+  <p class="hero__eyebrow">safeDeposit</p>
+  <h1 class="hero__title">Your deposit.<br>Safe until it's settled.</h1>
+  <p class="hero__lead">The tenant's deposit is held in escrow for the whole stay. When the lease ends, any two of the tenant, the owner and an independent arbiter decide where it goes.</p>
   <div class="row">
-    <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">Create an escrow</a>
-    <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">View my leases</a>
+    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow</a>
+    <a class="link-more" href="#how-heading">See how it works</a>
   </div>
 </section>
 
-<section class="mt-8" aria-labelledby="how-heading">
-  <h2 id="how-heading">How it works</h2>
-  <div class="grid grid--3 mt-4">
-    <article class="card">
-      <h3 class="card__title">1. Set up</h3>
-      <p class="muted">The owner creates the escrow with the lease dates, the deposit amount and the wallet addresses of all three parties.</p>
+<section class="section" aria-labelledby="how-heading">
+  <h2 id="how-heading" class="section__title">Three steps. No surprises.</h2>
+  <div class="grid grid--3">
+    <article class="card tile">
+      <p class="tile__number" aria-hidden="true">01</p>
+      <h3>Set up</h3>
+      <p>The owner creates the escrow with the lease dates, the deposit and the wallets of all three parties.</p>
     </article>
-    <article class="card">
-      <h3 class="card__title">2. Deposit</h3>
-      <p class="muted">The tenant pays the deposit in {{ escrow_config.currency.code|default:"stablecoin" }} into escrow. Nobody can move it alone.</p>
+    <article class="card tile">
+      <p class="tile__number" aria-hidden="true">02</p>
+      <h3>Deposit</h3>
+      <p>The tenant pays in {{ escrow_config.currency.code|default:"stablecoin" }}. Nobody can move it alone.</p>
     </article>
-    <article class="card">
-      <h3 class="card__title">3. Decide</h3>
-      <p class="muted">When the lease ends, each party votes to return the deposit to the tenant or release it to the owner. Two matching votes settle it.</p>
+    <article class="card tile">
+      <p class="tile__number" aria-hidden="true">03</p>
+      <h3>Decide</h3>
+      <p>At the end of the lease, each party votes. Two matching votes release the deposit.</p>
     </article>
+  </div>
+</section>
+
+<section class="band" aria-labelledby="rule-heading">
+  <p class="band__stat" aria-hidden="true">2&nbsp;of&nbsp;3</p>
+  <h2 id="rule-heading" class="band__title">One simple rule settles every deposit.</h2>
+  <p>Tenant and owner agree, and it's done. If they don't, the arbiter breaks the tie. No single party can release the deposit alone.</p>
+</section>
+
+<section class="section center">
+  <h2>Ready when you are.</h2>
+  <div class="row row--center mt-8">
+    <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Create an escrow</a>
+    <a class="link-more" href="{% url 'escrow:dashboard' %}">View my leases</a>
   </div>
 </section>
 {% endblock %}

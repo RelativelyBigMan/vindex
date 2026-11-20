@@ -1,6 +1,6 @@
-# decelsus
+# safeDeposit
 
-Escrow for rental deposits. The tenant's deposit (a stablecoin on the XRP Ledger testnet) is held for the length of the lease, then released by a **2-of-3 vote** between tenant, owner and an independent arbiter.
+safeDeposit (repo: decelsus) holds rental deposits in escrow. The tenant's deposit (a stablecoin on the XRP Ledger testnet) is held for the length of the lease, then released by a **2-of-3 vote** between tenant, owner and an independent arbiter.
 
 This repo is **frontend only** so far. It's laid out the way Django expects, so a Django project can use it without moving files.
 
@@ -27,6 +27,8 @@ New pages: `{% extends "base.html" %}` and fill `{% block content %}`.
 ```python
 TEMPLATES[0]["DIRS"] = [BASE_DIR / "templates"]
 STATICFILES_DIRS = [BASE_DIR / "static"]
+# Hashed filenames so browsers never keep a stale global.css/app.js after a deploy:
+STORAGES = {"staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.ManifestStaticFilesStorage"}}
 ```
 
 **URL names** used by the templates:
