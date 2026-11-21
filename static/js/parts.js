@@ -8,7 +8,7 @@ import { ROLE_LABEL, copyButton, el, extLink, fmtClock, fmtTime, money, shortAdd
 const SETUP_STEPS = [
   ["funded", "Settlement account created"],
   ["trust_line", "Trust line to the deposit token"],
-  ["signers", "Tenant, landlord and arbiter set as signers (2 of 3)"],
+  ["signers", "Tenant, owner and arbiter set as signers (2 of 3)"],
   ["master_disabled", "Account's own key disabled"],
 ];
 
@@ -47,14 +47,14 @@ export function partyCard(party, me) {
 export function splitBar(tenantAmount, landlordAmount, code, total) {
   const sum = total ?? null;
   const tenantShare = sum ? percent(tenantAmount, sum) : 50;
-  const bar = el("div", { class: "split", role: "img", "aria-label": `Tenant ${money(tenantAmount, code)}, landlord ${money(landlordAmount, code)}` },
+  const bar = el("div", { class: "split", role: "img", "aria-label": `Tenant ${money(tenantAmount, code)}, owner ${money(landlordAmount, code)}` },
     el("span", { class: "split__tenant" }), el("span", { class: "split__landlord" }));
   // CSSOM, not an inline style attribute: allowed by the strict CSP.
   bar.children[0].style.flexGrow = String(tenantShare);
   bar.children[1].style.flexGrow = String(100 - tenantShare);
   return el("div", {}, bar, el("div", { class: "split-legend" },
     el("span", { class: "role-tenant" }, el("span", { class: "role-dot", "aria-hidden": "true" }), `Tenant ${money(tenantAmount, code)}`),
-    el("span", { class: "role-landlord" }, el("span", { class: "role-dot", "aria-hidden": "true" }), `Landlord ${money(landlordAmount, code)}`)));
+    el("span", { class: "role-landlord" }, el("span", { class: "role-dot", "aria-hidden": "true" }), `Owner ${money(landlordAmount, code)}`)));
 }
 
 const PROPOSAL_STATUS = { OPEN: ["warning", "Open"], EXECUTED: ["success", "Paid out"], SUPERSEDED: ["", "Replaced"], EXPIRED: ["danger", "Expired"] };
@@ -69,14 +69,14 @@ export function proposalCard(proposal, state, onApprove) {
   const total = fromMicro((toMicro(proposal.tenant_amount) ?? 0n) + (toMicro(proposal.landlord_amount) ?? 0n));
   const canApprove = onApprove && state.actions.includes(`sign:${proposal.id}`);
   const retry = proposal.signatures_count >= proposal.signatures_required;
-  const names = (list) => list.map((p) => `${p.name} (${p.role})`).join(", ");
+  const names = (list) => list.map((p) => `${p.name} (${ROLE_LABEL[p.role].toLowerCase()})`).join(", ");
   return el("article", { class: "card" },
     el("div", { class: "row row--between" },
-      el("h3", { text: `${money(proposal.tenant_amount, state.currency)} to the tenant, ${money(proposal.landlord_amount, state.currency)} to the landlord` }),
+      el("h3", { text: `${money(proposal.tenant_amount, state.currency)} to the tenant, ${money(proposal.landlord_amount, state.currency)} to the owner` }),
       el("span", { class: `badge${tone ? " badge--" + tone : ""}`, text: label })),
     el("div", { class: "mt-4" }, splitBar(proposal.tenant_amount, proposal.landlord_amount, state.currency, total)),
     proposal.reason && el("p", { class: "mt-4" }, el("span", { class: "sc muted", text: "Reason " }), proposal.reason),
-    el("p", { class: "small muted mt-4", text: `Proposed by ${proposal.proposed_by.name} (${proposal.proposed_by.role}) at ${fmtClock(proposal.created_at)}` }),
+    el("p", { class: "small muted mt-4", text: `Proposed by ${proposal.proposed_by.name} (${ROLE_LABEL[proposal.proposed_by.role].toLowerCase()}) at ${fmtClock(proposal.created_at)}` }),
     el("div", { class: "mt-4" },
       el("p", { class: "small", text: `Approvals: ${Math.min(proposal.signatures_count, proposal.signatures_required)} of ${proposal.signatures_required}${proposal.signed_by.length ? " · " + names(proposal.signed_by) : ""}` }),
       el("div", { class: "progress", "aria-hidden": "true" },
@@ -89,8 +89,8 @@ export function proposalCard(proposal, state, onApprove) {
     canApprove && el("div", { class: "actions mt-4" },
       el("button", {
         type: "button", class: "btn btn--primary", on: { click: (event) => onApprove(event.currentTarget, proposal) },
-        title: "Signed on the server with this persona's Testnet key",
-      }, retry ? "Retry the payout" : "Approve this split", el("span", { class: "small", text: " (demo key)" }))));
+        title: "Signed by safeDeposit with your Testnet wallet's key",
+      }, retry ? "Retry the payout" : "Approve this split", el("span", { class: "small", text: " (Testnet key)" }))));
 }
 
 export function eventItem(event, isNew = false) {

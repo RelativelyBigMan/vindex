@@ -40,7 +40,7 @@ PNG = b"\x89PNG\r\n\x1a\n" + os.urandom(64)  # passes the server's file-signatur
 class Api:
     def __init__(self, base):
         self.base, self.http = base.rstrip("/"), requests.Session()
-        self.get("/api/me/")
+        self.get("/api/demo/personas/")  # sets the CSRF cookie
 
     def _result(self, response):
         data = response.json()
@@ -48,8 +48,9 @@ class Api:
             raise SystemExit(f"FAIL {response.request.method} {response.url} -> {response.status_code} {data.get('code')}: {data.get('error')}")
         return data
 
-    def get(self, path):
-        return self._result(self.http.get(self.base + path, timeout=120))
+    def get(self, path, ok401=False):
+        response = self.http.get(self.base + path, timeout=120)
+        return None if ok401 and response.status_code == 401 else self._result(response)
 
     def post(self, path, body=None, files=None, data=None, ok=(200, 201)):
         headers = {"X-CSRFToken": self.http.cookies.get("csrftoken", ""), "Referer": self.base + "/"}
@@ -84,11 +85,19 @@ def main():
     api = Api(args.base)
     personas = {p["role"]: p for p in api.get("/api/demo/personas/")["personas"]}
 
-    challenge = api.get(f"/api/wallet/challenge/?address={wallet.address}")
-    signature = keypairs.sign(challenge["message"].encode(), wallet.private_key)
-    me = api.post("/api/wallet/link/", {"address": wallet.address, "role": "tenant", "public_key": wallet.public_key, "signature": signature})
+    def proof():
+        challenge = api.get(f"/api/wallet/challenge/?address={wallet.address}")
+        return {"address": wallet.address, "public_key": wallet.public_key,
+                "signature": keypairs.sign(challenge["message"].encode(), wallet.private_key)}
+
+    me = api.post("/api/register/", {"first_name": "Wallet", "last_name": "Walkthrough", "role": "tenant",
+                                     "accept_terms": True, "wallet": "gemwallet", **proof()})
     assert me["wallet_type"] == "gemwallet" and not me["can_sign"], me
-    step("signed challenge accepted; session acts as the wallet (no key on the server)")
+    step("account registered with a signed challenge (no key on the server)")
+    api.post("/api/logout/")
+    api.post("/api/wallet/link/", proof())
+    assert api.get("/api/me/")["address"] == wallet.address
+    step("signed out and back in with the wallet alone")
 
     wallet_submit(wallet, services.autofill_trust_set(wallet.address, "EUR", eur.issuer_address))
     time.sleep(1)

@@ -31,7 +31,7 @@ class Api:
     def __init__(self, base):
         self.base = base.rstrip("/")
         self.http = requests.Session()
-        self.get("/api/me/")  # sets the CSRF cookie
+        self.get("/api/demo/personas/")  # sets the CSRF cookie
 
     def _result(self, response):
         try:

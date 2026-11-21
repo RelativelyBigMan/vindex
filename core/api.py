@@ -8,6 +8,7 @@ Secrets: the fulfillment leaves the server only in GET .../release-tx/ for the l
 or landlord; seeds never leave it.
 """
 import hashlib
+import re
 import json
 import logging
 import secrets
@@ -18,6 +19,9 @@ from decimal import Decimal
 from functools import wraps
 
 from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.core.cache import cache
 from django.db.models import Q
 from django.http import FileResponse, Http404, JsonResponse
@@ -26,6 +30,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 from xrpl.core import keypairs
 from xrpl.core.addresscodec import is_valid_classic_address
+from xrpl.wallet import Wallet
 
 from ledger import services
 from ledger.client import explorer_account, explorer_tx, network, network_key
@@ -53,6 +58,14 @@ EVIDENCE_CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "
 ARBITER_CREDENTIAL = "VERIFIED_ARBITER"
 CREDENTIAL_TTL = 60  # seconds a credential reading may be reused
 CHALLENGE_TTL = 300  # seconds a wallet sign-in challenge stays valid
+USERNAME = re.compile(r"[a-z0-9_]{3,30}")
+NEW_WALLET_TOKENS = Decimal("5000")
+REGISTRATIONS_PER_HOUR = 6   # per client address: each new Testnet wallet costs the treasury XRP
+LOGIN_ATTEMPTS = 6           # per username, per 5 minutes
+
+
+class NotSignedIn(Exception):
+    """No account in this session. -> HTTP 401"""
 
 
 # ---- plumbing ----
@@ -73,6 +86,8 @@ def api(*methods):
                 if request.method == "GET":
                     get_token(request)  # make sure the CSRF cookie exists before the first POST
                 result = view(request, *args, **kwargs)
+            except NotSignedIn:
+                return _error("Sign in or create an account first.", "not_signed_in", 401)
             except InvalidInput as exc:
                 return _error(exc.message, exc.code, 400)
             except InvalidTransition as exc:
@@ -121,15 +136,42 @@ def _require_demo():
 
 
 def current_party(request):
-    """The persona this session acts as. Demo mode has no passwords and defaults to the tenant persona."""
-    party = Party.objects.filter(pk=request.session.get("party_id")).first() if request.session.get("party_id") else None
-    if party is not None and party.wallet_type == Party.WalletType.DEMO and not settings.DEMO_MODE:
-        party = None
-    if party is None and settings.DEMO_MODE:
-        party = Party.objects.filter(role=Party.Role.TENANT, wallet_type=Party.WalletType.DEMO).order_by("pk").first()
-    if party is None:
-        raise InvalidTransition("No persona is selected. Run bootstrap_demo, then pick one on the demo page.", "no_persona")
+    """The account this session is signed in as. Raises NotSignedIn (HTTP 401) when there is none."""
+    party_id = request.session.get("party_id")
+    party = Party.objects.filter(pk=party_id).first() if party_id else None
+    if party is None or (party.seed and not settings.DEMO_MODE):  # server-held keys only exist in demo mode
+        raise NotSignedIn
     return party
+
+
+def signed_in(request):
+    """For page views: is there a usable account in this session?"""
+    try:
+        current_party(request)
+        return True
+    except NotSignedIn:
+        return False
+
+
+def _sign_in(request, party):
+    request.session.cycle_key()  # a new session id whenever the identity changes (session fixation)
+    request.session["party_id"] = party.pk
+
+
+def _client_ip(request):
+    return request.META.get("REMOTE_ADDR", "unknown")
+
+
+def _throttle(key, limit, seconds, message):
+    """Count an attempt; refuse once `limit` is reached within `seconds`."""
+    cache.add(key, 0, seconds)
+    try:
+        count = cache.incr(key)
+    except ValueError:  # expired between the two calls
+        cache.set(key, 1, seconds)
+        count = 1
+    if count > limit:
+        raise InvalidTransition(message, "too_many_attempts")
 
 
 def _lease_for(lease_id, party):
@@ -181,6 +223,7 @@ def _party(party, role=None):
     data = {
         "party_id": party.pk, "name": party.display_name, "role": role, "address": party.address,
         "wallet_type": party.wallet_type, "can_sign": bool(party.seed), "explorer_url": explorer_account(party.address),
+        "registered": bool(party.first_name), "username": party.username,
     }
     if role == Party.Role.ARBITER:
         data["verified_arbiter"] = verified_arbiter(party.address)
@@ -313,7 +356,8 @@ def lease_state(lease, party):
 @api("GET")
 def me(request):
     party = current_party(request)
-    data = {**_party(party), "network": network_key(), "demo_mode": settings.DEMO_MODE, "balances": None}
+    data = {**_party(party), "network": network_key(), "demo_mode": settings.DEMO_MODE, "balances": None,
+            "funding": bool(cache.get(f"funding:{party.address}"))}
     try:
         data["balances"] = _balances(party.address)
     except LedgerError as exc:
@@ -325,7 +369,7 @@ def me(request):
 def demo_personas(request):
     """Not in the contract: the personas a demo session can switch between (ids for the persona switcher)."""
     _require_demo()
-    parties = Party.objects.filter(wallet_type=Party.WalletType.DEMO).order_by("pk")
+    parties = Party.objects.filter(is_persona=True).order_by("pk")
     personas = [_party(p) for p in parties]
     if request.GET.get("balances"):
         for persona in personas:
@@ -333,32 +377,32 @@ def demo_personas(request):
                 persona["balances"] = _balances(persona["address"])
             except LedgerError as exc:
                 persona["balances"], persona["balances_error"] = None, exc.message
-    return {"personas": personas, "current": current_party(request).pk}
+    return {"personas": personas, "current": request.session.get("party_id")}
 
 
 @api("POST")
 def demo_persona(request):
     _require_demo()
     party_id = _int(_body(request).get("party_id"), "party_id", 1, 2**31)
-    party = Party.objects.filter(pk=party_id, wallet_type=Party.WalletType.DEMO).first()
+    # Seeded personas only (used by the walkthrough scripts): never a registered user's account.
+    party = Party.objects.filter(pk=party_id, is_persona=True).first()
     if party is None:
         raise InvalidInput("That demo persona doesn't exist.", "unknown_party")
-    request.session["party_id"] = party.pk
+    _sign_in(request, party)
     return _party(party)
 
 
-@api("POST")
-def demo_fund(request):
-    """Top the current persona up with XRP (when low) and 5,000 of each test token."""
-    _require_demo()
-    party = current_party(request)
-    if not cache.add(f"fund-cooldown:{party.address}", 1, 30):
-        raise InvalidTransition("This persona was topped up a moment ago. Wait half a minute.", "too_soon")
+def provision_wallet(party, tokens=True, lines=True):
+    """Make a party's wallet usable on the test network: XRP when new or low, trust lines, test tokens.
+
+    -> (tx hashes, currency codes skipped). Safe to repeat; every step first checks the ledger.
+    """
     hashes, skipped = [], []
-    if services.get_balances(party.address)["XRP"] < FUND_XRP_BELOW:
-        hashes.append(services.fund_xrp(lifecycle.platform_wallet("treasury"), party.address, FUND_XRP))
+    if not services.account_exists(party.address) or services.get_balances(party.address)["XRP"] < FUND_XRP_BELOW:
+        hashes.append(services.fund_xrp(lifecycle.funded_treasury(FUND_XRP), party.address, FUND_XRP))
+    cache.delete(f"balances:{party.address}")
     issuers = {w.address: w for w in PlatformWallet.objects.filter(role__startswith="issuer_")}
-    for currency in Currency.objects.order_by("code"):
+    for currency in Currency.objects.order_by("code") if lines else []:
         issuer = issuers.get(currency.issuer_address)
         if issuer is None:
             skipped.append(currency.code)
@@ -368,8 +412,20 @@ def demo_fund(request):
         elif not services.has_trust_line(party.address, currency.code, currency.issuer_address):
             skipped.append(currency.code)  # an external wallet has to add its own trust line first
             continue
-        hashes.append(services.issue_tokens(lifecycle.Wallet.from_seed(issuer.seed), party.address, currency.code, FUND_TOKENS))
+        if tokens:
+            hashes.append(services.issue_tokens(lifecycle.Wallet.from_seed(issuer.seed), party.address, currency.code, FUND_TOKENS))
     cache.delete(f"balances:{party.address}")
+    return hashes, skipped
+
+
+@api("POST")
+def demo_fund(request):
+    """Top the signed-in account up with XRP (when low) and 5,000 of each test token."""
+    _require_demo()
+    party = current_party(request)
+    if not cache.add(f"fund-cooldown:{party.address}", 1, 30):
+        raise InvalidTransition("This wallet was topped up a moment ago. Wait half a minute.", "too_soon")
+    hashes, skipped = provision_wallet(party)
     return {
         "tx_hashes": hashes, "explorer_urls": [explorer_tx(h) for h in hashes], "skipped": skipped,
         "balances": _balances(party.address),
@@ -391,9 +447,9 @@ def wallet_challenge(request):
     """A one-time message for the browser wallet to sign, proving it controls its address."""
     nonce = secrets.token_urlsafe(24)
     request.session["wallet_challenge"] = {"nonce": nonce, "at": int(clock.time())}
-    # known_role lets the page ask a new wallet for its role BEFORE the single signature popup.
-    known = Party.objects.filter(address=str(request.GET.get("address") or "")).first()
-    return {"message": _challenge_text(nonce), "expires_in": CHALLENGE_TTL, "known_role": known.role if known else None}
+    # 'registered' lets the page send a new wallet to registration BEFORE asking for a signature.
+    known = Party.objects.filter(address=str(request.GET.get("address") or "")).exclude(first_name="").first()
+    return {"message": _challenge_text(nonce), "expires_in": CHALLENGE_TTL, "registered": known is not None}
 
 
 def _verify_wallet_signature(request, address, public_key, signature):
@@ -413,36 +469,154 @@ def _verify_wallet_signature(request, address, public_key, signature):
 
 @api("POST")
 def wallet_link(request):
-    """Link a browser wallet's address to a Party (no seed on the server) and act as it.
+    """Sign in with a browser wallet that already has an account.
 
     The wallet must sign the one-time challenge from GET /api/wallet/challenge/; the server checks the
     signature and that the public key belongs to the address. Nothing secret leaves the wallet.
     """
     data = _body(request)
-    address, role = str(data.get("address") or "").strip(), data.get("role")
+    address = str(data.get("address") or "").strip()
     if not is_valid_classic_address(address):
         raise InvalidInput("That is not a valid XRP Ledger address.", "bad_address")
     _verify_wallet_signature(request, address, data.get("public_key"), data.get("signature"))
     party = Party.objects.filter(address=address).first()
-    if party is None:
-        if role not in Party.Role.values:
-            raise InvalidInput("Choose whether this wallet is a tenant, landlord or arbiter.", "role_needed")
+    if party is None or not party.first_name or party.seed:
+        raise InvalidTransition("No account uses this wallet yet. Create an account first.", "not_registered")
+    _sign_in(request, party)
+    return _party(party)
+
+
+def _clean_name(value, label, limit):
+    name = " ".join(str(value or "").split())
+    if not name or len(name) > limit or any(ord(ch) < 32 for ch in name):
+        raise InvalidInput(f"Enter your {label} (up to {limit} characters).", "bad_name")
+    return name
+
+
+@api("POST")
+def register(request):
+    """Create an account: name, surname(s), a role, and a wallet.
+
+    wallet 'gemwallet': the user's own browser wallet, proved with a signed challenge. No key reaches us.
+    wallet 'testnet':   demo mode only. A fresh test-network wallet is created, funded and held by the
+                        server; the user signs in with a username and password.
+    """
+    data = _body(request)
+    first = _clean_name(data.get("first_name"), "first name", 60)
+    last = _clean_name(data.get("last_name"), "surname", 80)
+    role = data.get("role")
+    if role not in Party.Role.values:
+        raise InvalidInput("Choose whether you are a tenant, an owner or an arbiter.", "bad_role")
+    if data.get("accept_terms") is not True:
+        raise InvalidInput("You need to accept the terms and the privacy notice.", "terms_required")
+    fields = {"display_name": f"{first} {last}", "first_name": first, "last_name": last, "role": role}
+    kind = data.get("wallet")
+    wallet_error = None
+
+    if kind == "gemwallet":
+        address = str(data.get("address") or "").strip()
+        if not is_valid_classic_address(address):
+            raise InvalidInput("That is not a valid XRP Ledger address.", "bad_address")
+        _verify_wallet_signature(request, address, data.get("public_key"), data.get("signature"))
+        party = Party.objects.filter(address=address).first()
+        if party is not None and (party.first_name or party.seed):
+            raise InvalidTransition("This wallet already has an account. Sign in instead.", "already_registered")
+        if party is not None and party.role != role and _has_leases(party):
+            # The address was named on a deposit before its owner registered: that role stands.
+            raise InvalidTransition(f"This wallet is already named as a {party.role} on a deposit.", "role_mismatch")
+        if party is None:
+            party = Party(address=address, seed=None, wallet_type=Party.WalletType.GEMWALLET)
+        for name, value in fields.items():
+            setattr(party, name, value)
+        party.save()
+    elif kind == "testnet":
+        _require_demo()
+        username = str(data.get("username") or "").strip().lower()
+        if not USERNAME.fullmatch(username):
+            raise InvalidInput("Usernames are 3 to 30 characters: lowercase letters, digits and underscores.", "bad_username")
+        password = data.get("password")
+        if not isinstance(password, str):
+            raise InvalidInput("Choose a password.", "bad_password")
+        try:
+            validate_password(password)
+        except ValidationError as exc:
+            raise InvalidInput(" ".join(exc.messages), "bad_password") from exc
+        _throttle(f"register:{_client_ip(request)}", REGISTRATIONS_PER_HOUR, 3600,
+                  "Too many new accounts from this connection. Try again in an hour.")
+        if Party.objects.filter(username=username).exists():
+            raise InvalidInput("That username is taken.", "username_taken")
+        wallet = Wallet.create()
         party = Party.objects.create(
-            display_name=_wallet_name(address), role=role, address=address, seed=None,
-            wallet_type=Party.WalletType.GEMWALLET,
+            address=wallet.address, seed=wallet.seed, wallet_type=Party.WalletType.DEMO,
+            username=username, password=make_password(password), **fields,
         )
-    elif party.wallet_type == Party.WalletType.DEMO and not settings.DEMO_MODE:
-        raise InvalidTransition("That address belongs to a demo persona.", "not_allowed")
-    request.session.cycle_key()  # a new session id once the identity changes (session fixation)
-    request.session["party_id"] = party.pk
+        # Funding takes several ledger transactions (up to a minute), so it runs in the background;
+        # the account page shows the balances arriving. If it fails, "Top up test funds" retries it.
+        lifecycle._spawn(_provision_new_account, party.pk)
+    else:
+        raise InvalidInput("Choose a wallet: your own GemWallet or a new Testnet wallet.", "bad_wallet")
+
+    _sign_in(request, party)
+    return JsonResponse({**_party(party), "wallet_error": wallet_error}, status=201)
+
+
+def _provision_new_account(party_id):
+    party = Party.objects.get(pk=party_id)
+    cache.set(f"funding:{party.address}", True, 180)
+    try:
+        # Tenants get test tokens for a deposit; owners get trust lines so they can be paid; arbiters only XRP.
+        provision_wallet(party, tokens=party.role == Party.Role.TENANT, lines=party.role != Party.Role.ARBITER)
+    except (LedgerError, InvalidTransition) as exc:
+        log.warning("funding the new wallet of account %s failed: %s", party_id, exc.message)
+    finally:
+        cache.delete(f"funding:{party.address}")
+        cache.delete(f"balances:{party.address}")
+
+
+def _has_leases(party):
+    return Lease.objects.filter(Q(tenant=party) | Q(landlord=party) | Q(arbiter=party)).exists()
+
+
+@api("POST")
+def login(request):
+    """Sign in to an account whose Testnet wallet the server holds (username and password)."""
+    data = _body(request)
+    username = str(data.get("username") or "").strip().lower()
+    password = data.get("password") if isinstance(data.get("password"), str) else ""
+    _throttle(f"login:{username[:30]}", LOGIN_ATTEMPTS, 300, "Too many sign-in attempts. Wait five minutes.")
+    party = Party.objects.filter(username=username).first() if USERNAME.fullmatch(username) else None
+    # Always run one hash check, so a wrong username takes as long as a wrong password.
+    valid = check_password(password, party.password if party and party.password else make_password(None))
+    if not (party and party.password and valid):
+        raise InvalidInput("Wrong username or password.", "bad_credentials")
+    _require_demo()
+    cache.delete(f"login:{username[:30]}")
+    _sign_in(request, party)
     return _party(party)
 
 
 @api("POST")
-def wallet_unlink(request):
-    """Stop acting as a linked wallet (back to the default demo persona)."""
-    request.session.pop("party_id", None)
+def logout(request):
+    request.session.flush()
     return {"ok": True}
+
+
+@api("POST")
+def wallet_unlink(request):
+    """Kept for older pages: the same as signing out."""
+    request.session.flush()
+    return {"ok": True}
+
+
+@api("GET")
+def arbiters(request):
+    """Registered arbiters, with whether the ledger shows their verified-arbiter credential.
+
+    Arbiters offer a service to the public, so their names are listed. Tenants and owners never are.
+    """
+    current_party(request)
+    found = Party.objects.filter(role=Party.Role.ARBITER).exclude(first_name="", is_persona=False).order_by("pk")[:30]
+    return {"arbiters": [_party(p) for p in found]}
 
 
 def _wallet_name(address):
@@ -489,17 +663,24 @@ def _pick_party(data, role):
     ledger, but the server can't approve splits for it.
     """
     address = str(data.get(f"{role}_address") or "").strip()
+    label = "owner" if role == Party.Role.LANDLORD else role
     if not address:
         party = Party.objects.filter(pk=_int(data.get(f"{role}_id"), f"{role}_id", 1, 2**31), role=role).first()
         if party is None:
-            raise InvalidInput("Pick an existing landlord and an existing arbiter.", "unknown_party")
+            raise InvalidInput("Pick an existing owner and an existing arbiter.", "unknown_party")
+        return party
+    if USERNAME.fullmatch(address.lower()) and not is_valid_classic_address(address):
+        # Exact username only: there is no way to browse or search names.
+        party = Party.objects.filter(username=address.lower(), role=role).first()
+        if party is None:
+            raise InvalidInput(f"No {label} has the username '{address.lower()}'.", "unknown_party")
         return party
     if not is_valid_classic_address(address):
-        raise InvalidInput(f"The {role}'s address is not a valid XRP Ledger address.", "bad_address")
+        raise InvalidInput(f"Enter the {label}'s username or XRP Ledger address.", "bad_address")
     party = Party.objects.filter(address=address).first()
     if party is None:
         if not services.account_exists(address):
-            raise InvalidInput(f"The {role}'s address doesn't exist on {network()['name']} yet.", "unknown_account")
+            raise InvalidInput(f"The {label}'s address doesn't exist on {network()['name']} yet.", "unknown_account")
         return Party.objects.create(
             display_name=_wallet_name(address), role=role, address=address, seed=None, wallet_type=Party.WalletType.GEMWALLET
         )
@@ -511,14 +692,14 @@ def _pick_party(data, role):
 def _create_lease(request, tenant):
     data = _body(request)
     if tenant.role != Party.Role.TENANT:
-        raise InvalidTransition("Only a tenant can start a deposit. Switch to the tenant persona.", "not_allowed")
+        raise InvalidTransition("Only a tenant can start a deposit.", "not_allowed")
     landlord = _pick_party(data, Party.Role.LANDLORD)
     arbiter = _pick_party(data, Party.Role.ARBITER)
     title = " ".join(str(data.get("title") or "").split())
     if len(title) > 120:
         raise InvalidInput("Keep the property name under 120 characters.", "bad_title")
     if len({tenant.address, landlord.address, arbiter.address}) != 3:
-        raise InvalidInput("Tenant, landlord and arbiter must be three different accounts.", "bad_signers")
+        raise InvalidInput("Tenant, owner and arbiter must be three different accounts.", "bad_signers")
     currency = Currency.objects.filter(code=str(data.get("currency") or "").upper()).first()
     if currency is None:
         raise InvalidInput("Pick EUR or USD.", "bad_currency")
@@ -623,7 +804,7 @@ def release_tx(request, lease_id):
     party = current_party(request)
     lease = _lease_for(lease_id, party)
     if lease.role_of(party) not in ("tenant", "landlord") or lease.status != Lease.Status.ACTIVE:
-        raise InvalidTransition("Only the tenant or the landlord can release a locked deposit.", "not_allowed")
+        raise InvalidTransition("Only the tenant or the owner can release a locked deposit.", "not_allowed")
     if party.wallet_type == Party.WalletType.DEMO and not settings.DEMO_MODE:
         raise InvalidTransition("Demo mode is switched off on this server.", "demo_disabled")
     return {

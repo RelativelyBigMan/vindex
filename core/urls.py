@@ -9,7 +9,9 @@ escrow_patterns = [
     path("leases/<uuid:lease_id>/", views.lease_detail, name="lease_detail"),
     path("verify/<uuid:lease_id>/", views.verify, name="verify"),
     path("arbiter/", views.arbiter, name="arbiter"),
-    path("demo/", views.demo, name="demo"),
+    path("register/", views.register, name="register"),
+    path("login/", views.login, name="login"),
+    path("account/", views.account, name="account"),
     path("demo/stage/", views.stage, name="stage"),
 ]
 
@@ -26,6 +28,10 @@ api_patterns = [
     path("api/demo/run-bot/", api.demo_run_bot),
     path("api/demo/stage/", api.demo_stage),
     path("api/demo/stage/act/", api.demo_stage_act),
+    path("api/register/", api.register),
+    path("api/login/", api.login),
+    path("api/logout/", api.logout),
+    path("api/arbiters/", api.arbiters),
     path("api/wallet/challenge/", api.wallet_challenge),
     path("api/wallet/link/", api.wallet_link),
     path("api/wallet/unlink/", api.wallet_unlink),

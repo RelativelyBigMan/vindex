@@ -112,7 +112,8 @@ export function statusBadge(status) {
   return el("span", { class: `badge${tone ? " badge--" + tone : ""}`, text: label });
 }
 
-export const ROLE_LABEL = { tenant: "Tenant", landlord: "Landlord", arbiter: "Arbiter" };
+/** "landlord" is the API's word; people see "Owner". */
+export const ROLE_LABEL = { tenant: "Tenant", landlord: "Owner", arbiter: "Arbiter" };
 
 /* ---------- Busy buttons ---------- */
 /**

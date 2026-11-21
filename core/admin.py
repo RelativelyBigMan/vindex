@@ -14,8 +14,8 @@ class PlatformWalletAdmin(admin.ModelAdmin):
 class PartyAdmin(admin.ModelAdmin):
     list_display = ("display_name", "role", "wallet_type", "address")
     list_filter = ("role", "wallet_type")
-    search_fields = ("display_name", "address")
-    exclude = ("seed",)
+    search_fields = ("display_name", "address", "username")
+    exclude = ("seed", "password")
 
 
 @admin.register(Currency)

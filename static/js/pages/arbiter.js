@@ -3,7 +3,7 @@ import { approveSplit } from "../actions.js";
 import { get } from "../api.js";
 import { proposalCard } from "../parts.js";
 import { poll } from "../poll.js";
-import { actAs, config, currentMe, onPersona } from "../session.js";
+import { currentMe, onPersona } from "../session.js";
 import { busy, el, extLink, money, renderIfChanged, shortHash, statusBadge } from "../ui.js";
 
 const $ = (selector) => document.querySelector(selector);
@@ -15,7 +15,7 @@ function caseCard(state) {
     el("div", { class: "row row--between" },
       el("h2", {}, el("a", { href: `/leases/${state.id}/`, text: state.title || `Deposit ${state.id.slice(0, 8)}` })),
       statusBadge(state.status)),
-    el("p", { class: "muted", text: `${money(state.amount, state.currency)} · ${state.parties[0].name} (tenant) and ${state.parties[1].name} (landlord) · ${state.release_reason === "damage_claim" ? "damage claim" : "early move-out"}` }),
+    el("p", { class: "muted", text: `${money(state.amount, state.currency)} · ${state.parties[0].name} (tenant) and ${state.parties[1].name} (owner) · ${state.release_reason === "damage_claim" ? "damage claim" : "early move-out"}` }),
     open
       ? proposalCard(open, state, (button) => busy(button, "Submitting to the XRPL (about 4 s)", async () => {
         try { await approveSplit(open.id); } catch { /* shown by api.js */ }
@@ -49,14 +49,6 @@ async function refresh() {
 onPersona((me) => {
   const notArbiter = Boolean(me) && me.role !== "arbiter";
   $("[data-not-arbiter]").hidden = !notArbiter;
-  $("[data-become-arbiter]").hidden = !config.demo_mode;
   poller?.now();
-});
-$("[data-become-arbiter]").addEventListener("click", async () => {
-  try {
-    const { personas } = await get("/api/demo/personas/");
-    const arbiter = personas.find((p) => p.role === "arbiter");
-    if (arbiter) await actAs(arbiter.party_id);
-  } catch { /* shown by api.js */ }
 });
 poller = poll(refresh, 4000);

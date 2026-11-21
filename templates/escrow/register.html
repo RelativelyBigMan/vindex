@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Create an account{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Create an account</h1>
+  <p>Tell us who you are, which part you play, and which wallet is yours. Everything runs on the XRP Ledger {{ escrow_config.network.name }}.</p>
+</div>
+
+{# The server re-validates every field. Names are shown only to the other parties of your deposits. #}
+<form class="form card" data-register-form data-next="{{ next }}" novalidate>
+  <fieldset class="form">
+    <legend>You</legend>
+    <div class="grid grid--2">
+      <div class="field">
+        <label for="id_first_name">Name</label>
+        <input id="id_first_name" name="first_name" type="text" maxlength="60" autocomplete="given-name" required>
+      </div>
+      <div class="field">
+        <label for="id_last_name">Surname(s)</label>
+        <input id="id_last_name" name="last_name" type="text" maxlength="80" autocomplete="family-name" required>
+      </div>
+    </div>
+  </fieldset>
+
+  <fieldset class="form">
+    <legend>Your role</legend>
+    <div class="grid grid--3" role="radiogroup" aria-label="Your role">
+      <label class="card choice party party--tenant">
+        <input type="radio" name="role" value="tenant" required checked>
+        <span class="party__role">Tenant</span>
+        <span class="small">You rent a home and lock the deposit.</span>
+      </label>
+      <label class="card choice party party--landlord">
+        <input type="radio" name="role" value="landlord">
+        <span class="party__role">Owner</span>
+        <span class="small">You let a home and can claim damage.</span>
+      </label>
+      <label class="card choice party party--arbiter">
+        <input type="radio" name="role" value="arbiter">
+        <span class="party__role">Arbiter</span>
+        <span class="small">You are independent and decide disputes.</span>
+      </label>
+    </div>
+    <p class="small muted">The role belongs to the wallet and can't be changed later. A new arbiter shows as "Unverified" until the mediation registry issues a credential.</p>
+  </fieldset>
+
+  <fieldset class="form">
+    <legend>Your wallet</legend>
+    <div class="grid grid--2" role="radiogroup" aria-label="Your wallet">
+      {% if escrow_config.demo_mode %}
+      <label class="card choice">
+        <input type="radio" name="wallet" value="testnet" required checked>
+        <strong>Create a Testnet wallet for me</strong>
+        <span class="small">A new test wallet, funded with test XRP (and test tokens if you are a tenant). safeDeposit holds its key, so every step works, including approving payouts. Test network only.</span>
+      </label>
+      {% endif %}
+      <label class="card choice">
+        <input type="radio" name="wallet" value="gemwallet" required{% if not escrow_config.demo_mode %} checked{% endif %}>
+        <strong>Connect my GemWallet</strong>
+        <span class="small">Your own wallet, set to {{ escrow_config.network.name }}. You prove it is yours with one signature; your key never leaves it. GemWallet can't approve payouts, so the other two parties approve splits.</span>
+      </label>
+    </div>
+
+    <div class="grid grid--2" data-testnet-fields>
+      <div class="field">
+        <label for="id_username">Username</label>
+        <input id="id_username" class="mono" name="username" type="text" minlength="3" maxlength="30" pattern="[a-z0-9_]{3,30}" autocomplete="username" autocapitalize="none" spellcheck="false" aria-describedby="username-help">
+        <small id="username-help">3 to 30 lowercase letters, digits or underscores. Others can name you on a deposit by this username.</small>
+      </div>
+      <div class="field">
+        <label for="id_password">Password</label>
+        <input id="id_password" name="password" type="password" minlength="8" autocomplete="new-password" aria-describedby="password-help">
+        <small id="password-help">At least 8 characters, not only digits. Stored as a salted hash.</small>
+      </div>
+    </div>
+    <p class="note" data-gemwallet-note hidden>After you click the button, GemWallet asks you to share your address and to sign one message. No transaction is made.</p>
+  </fieldset>
+
+  <label class="checkbox">
+    <input type="checkbox" name="accept_terms" required>
+    <span class="small">I agree to the <a href="{% url 'legal:terms' %}">Terms</a> and have read the <a href="{% url 'legal:privacy' %}">Privacy notice</a>. My name is shown to the other parties of my deposits; my wallet address and transactions are public on the ledger.</span>
+  </label>
+
+  <div class="row">
+    <button type="submit" class="btn btn--primary" data-submit>Create account</button>
+    <a class="link-more" href="{% url 'escrow:login' %}{% if request.GET.next %}?next={{ request.GET.next|urlencode }}{% endif %}">I already have an account</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/register.js' %}"></script>{% endblock %}

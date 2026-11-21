@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Sign in{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Sign in</h1>
+  <p>Use the way you registered: username and password, or your own wallet.</p>
+</div>
+
+<div class="grid grid--2" data-login data-next="{{ next }}">
+  {% if escrow_config.demo_mode %}
+  <form class="form card" data-login-form novalidate>
+    <h2 class="card__title">Username and password</h2>
+    <div class="field">
+      <label for="id_username">Username</label>
+      <input id="id_username" class="mono" name="username" type="text" maxlength="30" autocomplete="username" autocapitalize="none" spellcheck="false" required>
+    </div>
+    <div class="field">
+      <label for="id_password">Password</label>
+      <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="row"><button type="submit" class="btn btn--primary">Sign in</button></div>
+  </form>
+  {% endif %}
+
+  <section class="card form" aria-labelledby="wallet-login-heading">
+    <h2 class="card__title" id="wallet-login-heading">Your own wallet</h2>
+    <p class="muted">GemWallet asks you to share your address and sign one message. No transaction is made.</p>
+    <div class="row"><button type="button" class="btn" data-wallet-login>Sign in with GemWallet</button></div>
+  </section>
+</div>
+
+<p class="mt-8">No account yet? <a class="link-more" href="{% url 'escrow:register' %}{% if request.GET.next %}?next={{ request.GET.next|urlencode }}{% endif %}">Create an account</a></p>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/login.js' %}"></script>{% endblock %}

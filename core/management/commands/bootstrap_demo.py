@@ -163,11 +163,15 @@ class Command(BaseCommand):
 
     def persona(self, role, name, treasury):
         row = Party.objects.filter(role=role, wallet_type="demo", display_name=name).first()
+        if row and not row.is_persona:
+            Party.objects.filter(pk=row.pk).update(is_persona=True)
         if row:
             wallet = Wallet.from_seed(row.seed)
         else:
             wallet = Wallet.create()
-            Party.objects.create(display_name=name, role=role, address=wallet.address, seed=wallet.seed, wallet_type="demo")
+            Party.objects.create(
+                display_name=name, role=role, address=wallet.address, seed=wallet.seed, wallet_type="demo", is_persona=True
+            )
             self.created += 1
         funded = self.ensure_funded(wallet, treasury)
         self.step(f"{role} persona '{name}'", ("created" if not row else "reused") + (", funded" if funded else ""))

@@ -59,10 +59,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         started = time.monotonic()
-        demo = Party.WalletType.DEMO
-        tenant = Party.objects.filter(role="tenant", wallet_type=demo).order_by("pk").first()
-        landlord = Party.objects.filter(role="landlord", wallet_type=demo).order_by("pk").first()
-        arbiter = Party.objects.filter(role="arbiter", wallet_type=demo).order_by("pk").first()
+        tenant = Party.objects.filter(role="tenant", is_persona=True).order_by("pk").first()
+        landlord = Party.objects.filter(role="landlord", is_persona=True).order_by("pk").first()
+        arbiter = Party.objects.filter(role="arbiter", is_persona=True).order_by("pk").first()
         currency = Currency.objects.filter(code=options["currency"]).first()
         if not all((tenant, landlord, arbiter, currency)) or not PlatformWallet.objects.filter(role="treasury").exists():
             raise CommandError("The demo wallets are missing. Run: python manage.py bootstrap_demo")

@@ -43,6 +43,13 @@ class Party(models.Model):
     address = models.CharField(max_length=64, unique=True)
     seed = models.CharField(max_length=64, null=True, blank=True, help_text="Null for external wallets.")
     wallet_type = models.CharField(max_length=16, choices=WalletType.choices, default=WalletType.DEMO)
+    # Accounts (registration). A party with a first name is a registered user.
+    first_name = models.CharField(max_length=60, blank=True)
+    last_name = models.CharField(max_length=80, blank=True)
+    username = models.CharField(max_length=30, unique=True, null=True, blank=True, help_text="Sign-in name for Testnet wallets held by the server.")
+    password = models.CharField(max_length=128, blank=True, help_text="Password hash (Django hashers), never the password.")
+    is_persona = models.BooleanField(default=False, help_text="Seeded by bootstrap_demo; used by scripts and the presenter view.")
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
 
     class Meta:
         verbose_name_plural = "parties"

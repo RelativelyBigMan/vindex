@@ -58,7 +58,7 @@ export class WalletAdapter {
 
 /** Demo personas: keys live on the server (Testnet only), so pages call the demo endpoints instead of signing here. */
 export class DemoWallet extends WalletAdapter {
-  constructor() { super("demo", "Demo persona"); }
+  constructor() { super("demo", "Testnet wallet held by safeDeposit"); }
   async isAvailable() { return Boolean(config.demo_mode); }
   async connect() { return (await loadMe()).address; }
 }
@@ -125,30 +125,29 @@ function assertNetwork(walletNetwork) {
 }
 
 /**
- * Connect GemWallet and prove ownership of its address to the server with one signed challenge.
- * @param {(known: string|null) => Promise<string|null>} askRole  called for a wallet the server hasn't seen
+ * Ask GemWallet for its address and one signature over the server's one-time challenge.
+ * @returns {Promise<{address: string, public_key: string, signature: string, registered: boolean}>}
  */
-export async function connectBrowserWallet(askRole) {
+export async function walletProof({ mustBeRegistered = null } = {}) {
   const wallet = adapters.get("gemwallet");
   if (!(await wallet.isAvailable())) {
-    throw new WalletError("GemWallet wasn't found in this browser. Install the extension, or keep using the demo personas.");
+    throw new WalletError("GemWallet wasn't found in this browser. Install the extension and set it to " + config.network.name + ".");
   }
   const address = await wallet.connect();
   assertNetwork(await wallet.getNetwork());
   const challenge = await get(`/api/wallet/challenge/?address=${encodeURIComponent(address)}`);
-  let role = challenge.known_role;
-  if (!role) {
-    role = await askRole(null);
-    if (!role) throw new WalletError("No role chosen; the wallet wasn't connected.");
-  }
+  // Checked before the signature popup, so nobody signs for nothing.
+  if (mustBeRegistered === true && !challenge.registered) throw new WalletError("No account uses this wallet yet. Create an account first.");
+  if (mustBeRegistered === false && challenge.registered) throw new WalletError("This wallet already has an account. Sign in instead.");
   const proof = await wallet.signMessage(challenge.message);
   if (proof.address !== address) throw new WalletError("The wallet switched accounts during sign-in. Try again.");
-  await post("/api/wallet/link/", { address, role, public_key: proof.publicKey, signature: proof.signature });
-  return loadMe(true);
+  return { address, public_key: proof.publicKey, signature: proof.signature, registered: challenge.registered };
 }
 
-export async function disconnectBrowserWallet() {
-  await post("/api/wallet/unlink/");
+/** Sign in to an existing account with the wallet it was registered with. */
+export async function signInWithWallet() {
+  const { address, public_key, signature } = await walletProof({ mustBeRegistered: true });
+  await post("/api/wallet/link/", { address, public_key, signature });
   return loadMe(true);
 }
 

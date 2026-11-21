@@ -19,8 +19,8 @@ export function splitForm({ total, code, submitLabel, tenant, intro, onSubmit, o
   };
   const startTenant = tenant ?? total;
   const [tenantField, tenantInput] = input("tenant", `To the tenant (${code})`, startTenant);
-  const [landlordField, landlordInput] = input("landlord", `To the landlord (${code})`, fromMicro(totalMicro - (toMicro(startTenant) ?? totalMicro)));
-  const slider = el("input", { id: "split_share", type: "range", min: "0", max: "100", step: "1", "aria-label": "Landlord's share in percent" });
+  const [landlordField, landlordInput] = input("landlord", `To the owner (${code})`, fromMicro(totalMicro - (toMicro(startTenant) ?? totalMicro)));
+  const slider = el("input", { id: "split_share", type: "range", min: "0", max: "100", step: "1", "aria-label": "Owner's share in percent" });
   const reason = el("textarea", { id: "split_reason", name: "reason", maxLength: 500, required: true, placeholder: "What is the deduction for?" });
   const preview = el("div", {});
   const problem = el("p", { class: "small", role: "alert" });
@@ -56,7 +56,7 @@ export function splitForm({ total, code, submitLabel, tenant, intro, onSubmit, o
   const form = el("form", { class: "form", novalidate: true },
     intro && el("p", { class: "muted", text: intro }),
     el("div", { class: "grid grid--2" }, tenantField, landlordField),
-    el("div", { class: "field" }, el("label", { for: "split_share", text: "Landlord's share" }), slider),
+    el("div", { class: "field" }, el("label", { for: "split_share", text: "Owner's share" }), slider),
     preview,
     el("div", { class: "field" }, el("label", { for: "split_reason", text: "Reason" }), reason,
       el("small", { text: "Shown to the other parties. Not written to the ledger." })),

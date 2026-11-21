@@ -58,7 +58,7 @@ class Command(BaseCommand):
         try:
             currency = Currency.objects.get(code=self.code)
             self.issuer = currency.issuer_address
-            self.parties = {r: Party.objects.get(role=r, wallet_type="demo") for r in ("tenant", "landlord", "arbiter")}
+            self.parties = {r: Party.objects.filter(role=r, is_persona=True).order_by("pk")[0] for r in ("tenant", "landlord", "arbiter")}
             self.wallets = {r: Wallet.from_seed(p.seed) for r, p in self.parties.items()}
             self.treasury = Wallet.from_seed(PlatformWallet.objects.get(role="treasury").seed)
             self.bot = Wallet.from_seed(PlatformWallet.objects.get(role="bot").seed)

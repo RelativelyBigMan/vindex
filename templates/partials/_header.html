@@ -35,15 +35,15 @@
           <path d="M16 9.5l5 5M21 9.5l-5 5"/>
         </svg>
       </button>
-      {# Who this browser is acting as: a demo persona or a linked wallet. Filled from GET /api/me/. #}
-      <a class="persona-badge" data-persona href="{% if escrow_config.demo_mode %}{% url 'escrow:demo' %}{% else %}{% url 'escrow:dashboard' %}{% endif %}" hidden>
+      {# Who is signed in. Filled from GET /api/me/. #}
+      <a class="persona-badge" data-persona href="{% url 'escrow:account' %}" hidden>
         <span class="role-dot" aria-hidden="true"></span>
         <span class="persona-badge__name" data-persona-name></span>
         <span class="persona-badge__role" data-persona-role></span>
       </a>
-      <button type="button" class="btn btn--primary btn--sm" data-wallet-connect>Connect wallet</button>
-      <span class="wallet__address mono" data-wallet-address hidden></span>
-      <button type="button" class="btn btn--ghost btn--sm" data-wallet-disconnect hidden>Disconnect</button>
+      <button type="button" class="btn btn--ghost btn--sm" data-sign-out hidden>Sign out</button>
+      <a class="btn btn--ghost btn--sm" href="{% url 'escrow:login' %}" data-signed-out hidden>Sign in</a>
+      <a class="btn btn--primary btn--sm" href="{% url 'escrow:register' %}" data-signed-out hidden>Create account</a>
     </div>
   </div>
 </header>

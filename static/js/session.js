@@ -1,5 +1,5 @@
 /**
- * Who this browser is acting as: a demo persona or a linked wallet (GET /api/me/).
+ * Who is signed in (GET /api/me/); null for a visitor without an account.
  * Fires "persona:changed" on document whenever it is loaded or switched.
  */
 import { get, post } from "./api.js";
@@ -36,9 +36,9 @@ export function loadMe(force = false) {
 
 export const currentMe = () => me;
 
-export async function actAs(partyId) {
-  await post("/api/demo/persona/", { party_id: partyId });
-  return loadMe(true);
+export async function signOut() {
+  await post("/api/logout/");
+  location.assign("/");
 }
 
 export function onPersona(callback) {

@@ -957,3 +957,9 @@ details[open] > summary { margin-bottom: var(--space-3); }
   .spinner, .checklist li.is-current::before { animation-duration: 1.2s !important; animation-iteration-count: infinite !important; }
   .skeleton { animation: none; }
 }
+
+/* Choice cards (registration): a radio button with a title and a line of explanation */
+.choice { display: grid; gap: var(--space-2); cursor: pointer; padding: var(--space-6); align-content: start; }
+.choice input { width: 1.125rem; height: 1.125rem; accent-color: var(--color-accent-strong); }
+.choice:has(input:checked) { border-color: var(--color-text); box-shadow: 4px 4px 0 var(--color-accent); }
+.choice:has(input:focus-visible) { outline: 2px solid var(--color-focus); outline-offset: 3px; }

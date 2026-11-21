@@ -87,7 +87,7 @@ function render(where, data) {
     checks.push(check(signerList?.SignerQuorum === 2 && signers.length === 3 && signers.every((s) => s.SignerWeight === 1),
       "Spending from it needs 2 of 3 signatures."));
     checks.push(check(signers.length === 3 && expected.every((address) => signers.some((s) => s.Account === address)),
-      "The three signers are exactly the tenant, the landlord and the arbiter."));
+      "The three signers are exactly the tenant, the owner and the arbiter."));
   } else {
     checks.push(check(where.settlement_address ? false : null, where.settlement_address ? "The settlement account wasn't found on the ledger." : "The settlement account is still being set up."));
   }
@@ -113,7 +113,7 @@ function render(where, data) {
     ["Account", ...account(where.settlement_address, where)],
     ["Own key", root_.Flags & LSF_DISABLE_MASTER ? "Disabled" : "ACTIVE"],
     ["Quorum", `${signerList?.SignerQuorum ?? "?"} of ${signers.length}`],
-    ...signers.map((s) => [expected.indexOf(s.Account) >= 0 ? ["Tenant", "Landlord", "Arbiter"][expected.indexOf(s.Account)] : "Unknown signer", ...account(s.Account, where)]),
+    ...signers.map((s) => [expected.indexOf(s.Account) >= 0 ? ["Tenant", "Owner", "Arbiter"][expected.indexOf(s.Account)] : "Unknown signer", ...account(s.Account, where)]),
     ["Holds", money(settlementBalance, where.currency)],
   ] : [["Account", "Not on the ledger yet"]]);
 

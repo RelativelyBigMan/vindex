@@ -28,7 +28,7 @@ function primary(letter, s) {
   const open = s.proposals.find((p) => p.status === "OPEN");
   const button = (label, step) => el("button", { type: "button", class: "btn btn--primary btn--block", text: label, on: { click: (event) => act(event.currentTarget, s.id, step) } });
   if (letter === "B" && s.status === "ACTIVE") return button("Tenant moves out", "move_out");
-  if (letter === "B" && s.status === "IN_SETTLEMENT" && open) return button("Landlord approves the refund", "landlord_approve");
+  if (letter === "B" && s.status === "IN_SETTLEMENT" && open) return button("Owner approves the refund", "landlord_approve");
   if (letter === "C" && s.status === "IN_SETTLEMENT" && open) return button("Arbiter approves", "arbiter_approve");
   return null;
 }
@@ -52,7 +52,7 @@ function column(letter, s) {
   if (s.status === "SETTLED") parts.push(el("p", { class: "outcome__mark", text: "✓ settled 2 of 3" }));
   if (shown) {
     parts.push(el("div", {},
-      el("p", { text: `${money(shown.tenant_amount, s.currency)} tenant · ${money(shown.landlord_amount, s.currency)} landlord` }),
+      el("p", { text: `${money(shown.tenant_amount, s.currency)} tenant · ${money(shown.landlord_amount, s.currency)} owner` }),
       el("p", { class: "small muted", text: `Approvals ${Math.min(shown.signatures_count, 2)} of 2: ${shown.signed_by.map((p) => p.name).join(", ") || "none yet"}` }),
       el("div", { class: "progress", "aria-hidden": "true" },
         el("span", { class: `progress__step${shown.signatures_count >= 1 ? " is-filled" : ""}` }),

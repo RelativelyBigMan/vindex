@@ -12,6 +12,9 @@ export class ApiError extends Error {
   }
 }
 
+/** Pages a visitor may use without an account. */
+const PUBLIC = /^\/($|login\/|register\/|verify\/|legal\/|demo\/stage\/)/;
+
 function csrfToken() {
   const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : "";
@@ -42,6 +45,10 @@ export async function api(path, { method = "GET", json, form, quiet = false } = 
   }
   let data = null;
   try { data = await response.json(); } catch { /* not JSON: handled below */ }
+  if (response.status === 401 && !PUBLIC.test(location.pathname)) {
+    // Signed out (here or in another tab): back to the sign-in page, then return to this one.
+    location.assign(`/login/?next=${encodeURIComponent(location.pathname + location.search)}`);
+  }
   if (!response.ok || data === null) {
     const error = new ApiError(
       (data && data.error) || `The server answered with an error (HTTP ${response.status}).`,

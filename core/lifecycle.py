@@ -39,7 +39,7 @@ LIVE_TTL = 10  # seconds a live ledger reading may be reused
 SETUP_SUMMARIES = {
     "funded": "Settlement account created and funded",
     "trust_line": "Settlement account can hold {code} (trust line set)",
-    "signers": "Tenant, landlord and arbiter set as signers (2 of 3 required)",
+    "signers": "Tenant, owner and arbiter set as signers (2 of 3 required)",
     "master_disabled": "Settlement account's own key disabled: only 2 of 3 signatures can move funds",
 }
 
@@ -61,6 +61,11 @@ class InvalidInput(Exception):
 
 
 # ---- helpers ----
+
+def role_word(role):
+    """The word people see for a role: the data model says 'landlord', the site says 'owner'."""
+    return "owner" if role == "landlord" else role
+
 
 def plain(amount):
     """Decimal -> '1000' / '0.5' (no exponent, no trailing zeros)."""
@@ -189,14 +194,18 @@ _treasury_guard = threading.Lock()
 TREASURY_KEEP_XRP = Decimal("3")  # reserve plus fees that must stay in the treasury
 
 
-def _funded_treasury():
-    """The treasury wallet, topped up from the test faucet first when it can't pay for a settlement account."""
+def funded_treasury(needed=None):
+    """The treasury wallet, topped up from the test faucet first when it can't pay `needed` XRP."""
+    needed = services.SETTLEMENT_FUND_XRP if needed is None else needed
     treasury = platform_wallet("treasury")
     with _treasury_guard:
-        if services.get_balances(treasury.address)["XRP"] < services.SETTLEMENT_FUND_XRP + TREASURY_KEEP_XRP:
+        if services.get_balances(treasury.address)["XRP"] < needed + TREASURY_KEEP_XRP:
             log.info("treasury is low on XRP; asking the faucet")
             services.faucet_top_up(treasury)
     return treasury
+
+
+_funded_treasury = funded_treasury
 
 
 def _run_setup(lease_id):
@@ -338,7 +347,7 @@ def release(lease, party, reason):
         _require_status(lease, S.ACTIVE, "release the deposit")
         role = lease.role_of(party)
         if role not in ("tenant", "landlord"):
-            raise InvalidTransition("Only the tenant or the landlord can release the deposit.", "not_allowed")
+            raise InvalidTransition("Only the tenant or the owner can release the deposit.", "not_allowed")
         wallet = wallet_for(party)
         try:
             tx_hash = services.finish_escrow(
@@ -383,7 +392,7 @@ def register_wallet_release(lease, party, reason, tx_hash):
         _require_status(lease, S.ACTIVE, "release the deposit")
         role = lease.role_of(party)
         if role not in ("tenant", "landlord"):
-            raise InvalidTransition("Only the tenant or the landlord can release the deposit.", "not_allowed")
+            raise InvalidTransition("Only the tenant or the owner can release the deposit.", "not_allowed")
         problems = verify_escrow_finish_tx(lease, party, services.get_transaction(tx_hash))
         if problems:
             raise InvalidInput("This transaction can't be accepted as the release: " + "; ".join(problems) + ".", "release_mismatch")
@@ -396,7 +405,7 @@ def _after_release(lease, party, role, reason, tx_hash):
         what = "moved out early" if reason == Lease.ReleaseReason.EARLY_MOVE_OUT else "claimed damage"
         record(
             lease, "released",
-            f"{party.display_name} ({role}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
+            f"{party.display_name} ({role_word(role)}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
         )
     if reason == Lease.ReleaseReason.EARLY_MOVE_OUT:
         try:
@@ -424,7 +433,7 @@ def propose(lease, party, tenant_amount, landlord_amount, reason=""):
 def _propose(lease, party, tenant_amount, landlord_amount, reason):
     _require_status(lease, S.IN_SETTLEMENT, "propose a split")
     if lease.role_of(party) is None:
-        raise InvalidTransition("Only the tenant, landlord or arbiter of this lease can propose a split.", "not_allowed")
+        raise InvalidTransition("Only the tenant, owner or arbiter of this lease can propose a split.", "not_allowed")
     tenant_amount = parse_amount(tenant_amount, "tenant_amount")
     landlord_amount = parse_amount(landlord_amount, "landlord_amount")
     reason = str(reason or "").strip()
@@ -455,7 +464,7 @@ def _propose(lease, party, tenant_amount, landlord_amount, reason):
     record(
         lease, "proposed",
         f"{party.display_name} proposed a split: {money(lease, tenant_amount)} to the tenant, "
-        f"{money(lease, landlord_amount)} to the landlord ({len(signatures)} of {QUORUM} approvals)",
+        f"{money(lease, landlord_amount)} to the owner ({len(signatures)} of {QUORUM} approvals)",
     )
     return proposal
 
@@ -473,7 +482,7 @@ def sign(proposal, party):
             raise InvalidTransition("This proposal is no longer open.", "proposal_closed")
         _require_status(lease, S.IN_SETTLEMENT, "approve a split")
         if lease.role_of(party) is None:
-            raise InvalidTransition("Only the tenant, landlord or arbiter of this lease can approve a split.", "not_allowed")
+            raise InvalidTransition("Only the tenant, owner or arbiter of this lease can approve a split.", "not_allowed")
         key = str(party.pk)
         if key in proposal.signatures:
             if len(proposal.signatures) < QUORUM:
@@ -487,7 +496,7 @@ def sign(proposal, party):
             proposal.save(update_fields=["signatures"])
             record(
                 lease, "signed",
-                f"{party.display_name} ({lease.role_of(party)}) approved the split "
+                f"{party.display_name} ({role_word(lease.role_of(party))}) approved the split "
                 f"({min(len(proposal.signatures), QUORUM)} of {QUORUM} approvals)",
             )
         if len(proposal.signatures) >= QUORUM:
@@ -511,12 +520,12 @@ def _execute(proposal, lease):
         record(
             lease, "settled",
             f"Deposit settled: {money(lease, proposal.tenant_amount)} to the tenant, "
-            f"{money(lease, proposal.landlord_amount)} to the landlord",
+            f"{money(lease, proposal.landlord_amount)} to the owner",
         )
 
 
 def _submit_remaining(proposal, lease):
-    names = {lease.tenant.address: f"{lease.tenant.display_name} (tenant)", lease.landlord.address: f"{lease.landlord.display_name} (landlord)"}
+    names = {lease.tenant.address: f"{lease.tenant.display_name} (tenant)", lease.landlord.address: f"{lease.landlord.display_name} (owner)"}
     for index in range(len(proposal.executed_hashes), len(proposal.prepared_txs)):
         tx = proposal.prepared_txs[index]
         signed = [signatures[index] for signatures in proposal.signatures.values()]

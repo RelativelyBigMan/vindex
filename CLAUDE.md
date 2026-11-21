@@ -104,3 +104,10 @@ config/ (settings, urls) | core/ (models, lifecycle.py, api.py, views.py, manage
   - Lease has title (off-chain label) and scenario (A/B/C, set by demo_scenarios; the stage view reads the newest of each).
   - Countdowns keep the earliest computed deadline: slow poll answers must never move it later.
   - Not done: Batch payouts (amendment off on Testnet), Crossmark, a click-through with the real GemWallet extension.
+- Accounts (2026-11-21, branch accounts-registration). Decisions by the user: people register an account and choose tenant, owner or arbiter; there is no demo personas page; everything runs on Testnet. Notes:
+  - Party has first_name, last_name, username, password (hash), is_persona. "Registered" means first_name is set. The UI word for the landlord role is "Owner"; the data model and API keep "landlord".
+  - POST /api/register/ {first_name, last_name, role, accept_terms, wallet: 'testnet' (+ username, password; DEMO_MODE only; server creates, funds in the background and holds the wallet) | 'gemwallet' (+ address, public_key, signature)}. POST /api/login/ {username, password}, POST /api/logout/, GET /api/arbiters/. POST /api/wallet/link/ is sign-in only (unknown wallet -> 409 not_registered).
+  - There is no default persona any more: without a session, the API answers 401 not_signed_in and account pages redirect to /login/?next=. Public: /, /register/, /login/, /verify/<id>/, /demo/stage/, legal pages.
+  - /api/demo/persona/ and /api/demo/personas/ still exist for the scripts and only reach is_persona parties (the bootstrap accounts), never a registered user.
+  - POST /api/leases/: landlord_address / arbiter_address accept an exact username or an address. No user directory, on purpose (privacy).
+  - New-wallet funding runs in a background thread (api._provision_new_account); GET /api/me/ has 'funding' while it runs.

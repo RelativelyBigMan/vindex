@@ -7,7 +7,7 @@
 <div class="page-header row row--between">
   <div>
     <h1>My leases</h1>
-    <p>Deposits where <span data-me-name>you</span> are the tenant, landlord or arbiter.</p>
+    <p>Deposits where <span data-me-name>you</span> are the tenant, owner or arbiter.</p>
   </div>
   <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}" data-new-lease>New deposit</a>
 </div>
@@ -33,7 +33,7 @@
 </div>
 
 <div class="card empty" data-empty hidden>
-  <p>No deposits here yet for this persona.</p>
+  <p>No deposits here yet.</p>
   <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">Protect your first deposit</a>
 </div>
 

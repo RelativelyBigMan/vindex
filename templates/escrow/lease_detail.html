@@ -17,7 +17,7 @@
   <p class="alert alert--warning" data-offline hidden>Connection lost. Showing the last known state; retrying…</p>
 
   <div class="card empty" data-forbidden hidden>
-    <p data-forbidden-text>This deposit isn't visible to the persona you are acting as.</p>
+    <p data-forbidden-text>This deposit isn't yours to see: your account is not its tenant, owner or arbiter.</p>
     <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">My leases</a>
   </div>
 

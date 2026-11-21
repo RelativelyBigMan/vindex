@@ -111,7 +111,7 @@ keys with no value, and the app refuses to start against mainnet.
 Checks (shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead of `.venv/bin/python`):
 
 ```bash
-.venv/bin/python manage.py test                       # 90 tests, no network
+.venv/bin/python manage.py test                       # 95 tests, no network
 .venv/bin/python manage.py smoke_test --scenario all  # ledger mechanics on Testnet
 .venv/bin/python scripts/api_walkthrough.py           # A, B, C through the JSON API (demo mode)
 .venv/bin/python scripts/wallet_walkthrough.py        # the browser-wallet paths, with a throw-away wallet
@@ -126,32 +126,48 @@ Checks (shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead o
    column offers *Run bot now* once 20 s have passed.
 5. Open *Public check* on any column: the browser verifies the deposit on the ledger itself.
 
+## Accounts
+
+There is no separate demo page: people create accounts and everything happens on the test network.
+
+- **Register** (`/register/`): name, surname(s), a role (tenant, owner or arbiter) and a wallet.
+  - *Create a Testnet wallet for me*: the server creates, funds and holds a test wallet (XRP, trust lines, and 5,000
+    test EUR and USD for tenants). Sign-in is by username and password. Available only with `DEMO_MODE=1`.
+  - *Connect my GemWallet*: the user's own wallet, proved with one signed challenge. Sign-in is with the wallet.
+- **Sign in** (`/login/`), **My account** (`/account/`): details, wallet address, balances, test top-up.
+- A tenant names the owner by exact username or wallet address; there is no user directory. Registered arbiters are
+  listed in the new-deposit form with their credential status.
+- Pages other than the home page, the public check and the presenter view need an account.
+- The three accounts made by `bootstrap_demo` (Giulia, Marco, Bari) remain as built-in examples for
+  `demo_scenarios`, the presenter view and the walkthrough scripts. They have no password and cannot be signed in to
+  from the site.
+
 ## Manual test script
 
 With `runserver` and `run_bot` running:
 
-1. `/demo/`: three persona cards with balances and the arbiter's *Verified arbiter* badge. *Act as Giulia*.
-2. **A, normal end.** *New deposit*: amount 1000, ends in 2 minutes, grace 1, tick the terms, *Create settlement
-   account*. Four checklist steps tick, each with an explorer link. *Sign & lock deposit*. The lease page shows the
-   countdown; shortly after it reaches zero a toast says the deposit was returned and the page shows the success state.
-3. **B, early move-out.** Create and lock another deposit (ends in 20 minutes). *I'm moving out early*. A proposal of
-   100% to the tenant appears with 1 of 2 approvals. Switch to Marco in the demo bar, *Approve this split*. Status:
-   Settled, with the payout link.
-4. **C, damage dispute.** Create and lock a third deposit. As Giulia, upload a photo under *Evidence*; it appears with
-   *Anchored on XRPL*. *Verify* says Match; *Verify an altered copy* says Mismatch. Switch to Marco, *Claim damage*, set
-   150 to the landlord, give a reason, submit. Switch to Bari, open *Arbiter*, *Approve this split*. Status: Settled,
-   850 / 150.
+1. Create three accounts with *Create a Testnet wallet for me*: a tenant, an owner and an arbiter (three browsers or
+   private windows keep all three signed in). Each lands on *My account*; within a minute the wallet shows its funds.
+2. **A, normal end.** As the tenant, *New deposit*: amount 1000, the owner's username, the arbiter, ends in 2 minutes,
+   grace 1, tick the terms, *Create settlement account*. Four checklist steps tick, each with an explorer link.
+   *Sign & lock deposit*. Shortly after the countdown reaches zero, a notice says the deposit was returned.
+3. **B, early move-out.** As the tenant, create and lock another deposit (ends in 20 minutes). *I'm moving out early*.
+   As the owner, open it from *My leases* and *Approve this split*. Status: Settled.
+4. **C, damage dispute.** As the tenant, create and lock a third deposit and upload a photo under *Evidence*;
+   *Verify* says Match, *Verify an altered copy* says Mismatch. As the owner, *Claim damage*, 150 to the owner, a
+   reason, submit. As the arbiter, open *Arbiter* and *Approve this split*. Status: Settled, 850 / 150.
 5. On any lease: *Inspect ledger data* shows the settlement account's raw ledger state; *Share verification link*
-   copies `/verify/<id>/`, which works in a private window.
-6. Every step is in the *Ledger timeline* with a working explorer link, and the browser console stays clean.
+   copies `/verify/<id>/`, which works in a private window without an account.
+6. Sign out, then open `/leases/`: you are sent to the sign-in page and back after signing in.
 
 ## Browser wallets (GemWallet)
 
-Demo mode (server-held Testnet keys, persona switcher) is the default and always works. A tenant or landlord can also
-use GemWallet on Testnet:
+Accounts with a Testnet wallet held by the server always work. A tenant or owner can instead register their own
+GemWallet on Testnet:
 
-- *Connect wallet* proves ownership with one signed challenge (`GET /api/wallet/challenge/`, then
-  `POST /api/wallet/link/`). The server checks the signature and that the public key derives the address.
+- Registering or signing in with GemWallet proves ownership with one signed challenge (`GET /api/wallet/challenge/`,
+  then `POST /api/register/` or `POST /api/wallet/link/`). The server checks the signature and that the public key
+  derives the address.
 - Lock and release: the server builds the unsigned transaction, the wallet signs and submits it, and the server accepts
   it only after checking the validated transaction on the ledger (right escrow, amount, condition, sender).
 - Before locking, the page checks the wallet's trust line and balance and offers a one-click TrustSet and a test top-up.
@@ -169,7 +185,11 @@ by xrpl-py). It has not been clicked through with the real extension yet.
 
 - Strict CSP on every page (`default-src 'self'`, no inline scripts or styles, WebSocket only to the configured test
   network). No third-party requests at run time, so no visitor IP reaches a CDN.
-- CSRF on every POST; session id rotated on wallet sign-in; one-time, expiring challenges.
+- CSRF on every POST; session id rotated on every sign-in; one-time, expiring wallet challenges.
+- Passwords are stored as salted PBKDF2 hashes and checked against Django's password validators. Sign-in attempts
+  are limited per username and new Testnet wallets per client address.
+- No user directory: tenants and owners are found only by exact username or address. Names are shown only to the
+  parties of a shared deposit.
 - The escrow's release secret leaves the server only in `GET /api/leases/<id>/release-tx/`, for that lease's tenant or
   landlord. Seeds never leave it and are hidden in the admin.
 - Evidence photos are served only to the lease's three parties through an access-checked view (`nosniff`, sandboxed).
@@ -185,7 +205,8 @@ by xrpl-py). It has not been clicked through with the real extension yet.
 - Wallets can't multisign, so payout approvals use demo keys.
 - Production would use a regulated euro stablecoin whose issuer enables escrow, and a real arbiter registry.
 - Photo EXIF data is not stripped (photos are private to the parties, but should be cleaned before any wider use).
-- No rate limiting or user accounts beyond the demo session and wallet sign-in.
+- No email, password reset or account deletion yet. The role is fixed per wallet. Arbiters register themselves and
+  stay "Unverified" until someone issues the credential (only `bootstrap_demo` does that today).
 - `demo_scenarios` took about 3 min 20 s on a slow connection; on a good one it is well under 3 minutes.
 
 ## Branding rules (XRP Brand Toolkit 2026)

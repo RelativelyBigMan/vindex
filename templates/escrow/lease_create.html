@@ -10,7 +10,7 @@
 </div>
 
 <p class="alert alert--warning" data-not-tenant hidden>
-  Only a tenant can start a deposit. <button type="button" class="btn btn--ghost btn--sm" data-become-tenant hidden>Act as the tenant</button>
+  Only a tenant can start a deposit. Your account has a different role.
 </p>
 
 {# The server re-validates every field (Decimal amounts, address format, three different accounts, dates). #}
@@ -62,20 +62,19 @@
 
   <fieldset class="form">
     <legend>Parties</legend>
-    <p class="small muted">The tenant is whoever you are acting as: <strong data-tenant-name>…</strong>. Use public addresses only. Never enter a seed phrase, secret or private key.</p>
+    <p class="small muted">You are the tenant: <strong data-tenant-name>…</strong>. Never enter a seed phrase, secret or private key.</p>
     <div class="field">
-      <label for="id_landlord">Landlord</label>
-      <select id="id_landlord" name="landlord" required data-party-select="landlord"></select>
-      <input class="mono" name="landlord_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
-             aria-label="Landlord's XRP Ledger address" placeholder="r…">
-      <small data-paste-note="landlord" hidden>A pasted address can receive its share and counts as a signer on the ledger, but in this demo it can't approve splits from this site.</small>
+      <label for="id_landlord">Owner</label>
+      <input id="id_landlord" class="mono" name="landlord_address" type="text" maxlength="64" autocomplete="off" autocapitalize="none" spellcheck="false" required
+             aria-describedby="landlord-help" placeholder="username or r… address">
+      <small id="landlord-help">The owner's safeDeposit username, or their XRP Ledger address. An address without an account can receive its share but can't approve splits here.</small>
     </div>
     <div class="field">
       <label for="id_arbiter">Arbiter</label>
       <select id="id_arbiter" name="arbiter" required data-party-select="arbiter" aria-describedby="arbiter-help"></select>
       <input class="mono" name="arbiter_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
              aria-label="Arbiter's XRP Ledger address" placeholder="r…">
-      <small id="arbiter-help">Independent of both sides. Listed arbiters hold a verified-arbiter credential on the ledger.</small>
+      <small id="arbiter-help">Independent of both sides. "Verified" means the ledger shows a credential from the mediation registry.</small>
       <p class="alert alert--warning" data-arbiter-warning hidden></p>
     </div>
   </fieldset>

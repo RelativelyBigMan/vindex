@@ -35,7 +35,7 @@ async function refresh() {
       $("[data-content]").hidden = true;
       $("[data-forbidden]").hidden = false;
       $("[data-forbidden-text]").textContent = error.status === 404
-        ? "This deposit isn't visible to the persona you are acting as. Switch to its tenant, landlord or arbiter."
+        ? "This deposit isn't yours to see: your account is not its tenant, owner or arbiter."
         : error.message;
       $("[data-title]").textContent = "Deposit";
     } else {
@@ -165,7 +165,7 @@ function lockStep(s, me) {
     }
   }
   box.append(el("div", { class: "actions" }, lock),
-    el("p", { class: "small muted", text: me.can_sign ? "Demo mode: signed on the server with this persona's Testnet key." : "Signed in your own wallet. safeDeposit never sees your key." }));
+    el("p", { class: "small muted", text: me.can_sign ? "Signed by safeDeposit with your Testnet wallet's key." : "Signed in your own wallet. safeDeposit never sees your key." }));
   return box;
 }
 
@@ -241,7 +241,7 @@ function renderActions(s, me) {
       buttons.push(el("button", {
         type: "button", class: "btn btn--tint-tenant",
         on: { click: (event) => {
-          if (!window.confirm("Move out early? The deposit leaves the escrow and goes to the settlement account, where the landlord (or the arbiter) must approve your refund.")) return;
+          if (!window.confirm("Move out early? The deposit leaves the escrow and goes to the settlement account, where the owner (or the arbiter) must approve your refund.")) return;
           act(event.currentTarget, confirmLabel, () => releaseDeposit(leaseId, "early_move_out", me));
         } },
       }, "I'm moving out early"));

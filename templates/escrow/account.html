@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}My account{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>My account</h1>
+  <p>Your details and your wallet on the XRP Ledger {{ escrow_config.network.name }}.</p>
+</div>
+
+<div class="grid grid--2">
+  <section class="card" aria-labelledby="account-heading">
+    <h2 class="card__title" id="account-heading">You</h2>
+    <dl class="details" data-account><dt><span class="skeleton"></span></dt><dd><span class="skeleton"></span></dd></dl>
+    <div class="actions mt-4">
+      <a class="btn btn--primary" href="{% url 'escrow:dashboard' %}">My leases</a>
+      <button type="button" class="btn btn--ghost" data-sign-out>Sign out</button>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="wallet-heading">
+    <h2 class="card__title" id="wallet-heading">Wallet</h2>
+    <div data-wallet-card><span class="skeleton"></span><span class="skeleton"></span></div>
+  </section>
+</div>
+
+<section class="sec" aria-labelledby="sec-next">
+  <h2 class="sec__title" id="sec-next">What to do next</h2>
+  <div class="grid grid--3">
+    <div class="defn"><p class="defn__head"><span class="defn__name">(Tenant)</span></p><p class="defn__body">Start a deposit. Name the owner by their username or wallet address, pick an arbiter, then lock it.</p></div>
+    <div class="defn"><p class="defn__head"><span class="defn__name">(Owner)</span></p><p class="defn__body">Give your tenant your username or address. Their deposit then appears under My leases.</p></div>
+    <div class="defn"><p class="defn__head"><span class="defn__name">(Arbiter)</span></p><p class="defn__body">Deposits that name you appear on the Arbiter desk when a split needs deciding.</p></div>
+  </div>
+</section>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/account.js' %}"></script>{% endblock %}

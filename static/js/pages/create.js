@@ -5,34 +5,32 @@ import { lockDeposit } from "../actions.js";
 import { get, post } from "../api.js";
 import { setupChecklist } from "../parts.js";
 import { poll } from "../poll.js";
-import { actAs, config, onPersona } from "../session.js";
+import { onPersona } from "../session.js";
 import { busy, el, fmtTime, money, statusLine, toast } from "../ui.js";
 
 const $ = (selector) => document.querySelector(selector);
 const form = $("[data-lease-form]");
 const PASTE = "__paste__";
 let me = null;
-let personas = [];
+let arbiters = [];
 
 /* ---------- the form ---------- */
-function fillPartySelect(role) {
-  const select = form.querySelector(`[data-party-select="${role}"]`);
-  // Arbiters are listed only when the ledger shows their accepted credential.
-  const listed = personas.filter((p) => p.role === role && (role !== "arbiter" || p.verified_arbiter !== false));
+function fillArbiters() {
+  const select = form.querySelector('[data-party-select="arbiter"]');
+  // Verified arbiters first; an unverified one is still selectable, and says so.
+  const sorted = [...arbiters].sort((a, b) => Number(b.verified_arbiter === true) - Number(a.verified_arbiter === true));
   select.replaceChildren(
-    ...listed.map((p) => el("option", { value: String(p.party_id), text: role === "arbiter" && p.verified_arbiter ? `${p.name} (verified arbiter)` : p.name })),
-    el("option", { value: PASTE, text: "Paste an XRP Ledger address…" }));
-  onPartyChoice(role);
+    ...sorted.map((p) => el("option", { value: String(p.party_id), text: `${p.name} (${p.verified_arbiter ? "verified" : "unverified"})` })),
+    el("option", { value: PASTE, text: "Enter a username or address…" }));
+  onArbiterChoice();
 }
 
-function onPartyChoice(role) {
-  const pasting = form.elements[role].value === PASTE;
-  const input = form.elements[`${role}_address`];
+function onArbiterChoice() {
+  const pasting = form.elements.arbiter.value === PASTE;
+  const input = form.elements.arbiter_address;
   input.hidden = !pasting;
   input.required = pasting;
-  const note = form.querySelector(`[data-paste-note="${role}"]`);
-  if (note) note.hidden = !pasting;
-  if (role === "arbiter") $("[data-arbiter-warning]").hidden = true;
+  $("[data-arbiter-warning]").hidden = true;
 }
 
 let credentialCheck = 0;
@@ -67,10 +65,9 @@ function payload() {
   };
   if (form.elements.end_mode.value === "minutes") data.end_in_minutes = form.elements.end_in_minutes.value;
   else data.end_date = form.elements.end_date.value;
-  for (const role of ["landlord", "arbiter"]) {
-    if (form.elements[role].value === PASTE) data[`${role}_address`] = form.elements[`${role}_address`].value.trim();
-    else data[`${role}_id`] = Number(form.elements[role].value);
-  }
+  data.landlord_address = form.elements.landlord_address.value.trim();
+  if (form.elements.arbiter.value === PASTE) data.arbiter_address = form.elements.arbiter_address.value.trim();
+  else data.arbiter_id = Number(form.elements.arbiter.value);
   return data;
 }
 
@@ -85,7 +82,7 @@ form.addEventListener("submit", async (event) => {
   });
 });
 form.elements.end_mode.forEach((radio) => radio.addEventListener("change", onEndMode));
-for (const role of ["landlord", "arbiter"]) form.elements[role].addEventListener("change", () => onPartyChoice(role));
+form.elements.arbiter.addEventListener("change", onArbiterChoice);
 form.elements.arbiter_address.addEventListener("change", checkArbiterAddress);
 
 /* ---------- after submit: live setup checklist, then the lock step ---------- */
@@ -128,7 +125,7 @@ function watchSetup(leaseId) {
               });
             } },
           })),
-          el("p", { class: "small muted", text: "Demo mode: signed on the server with this persona's Testnet key." })));
+          el("p", { class: "small muted", text: "Signed by safeDeposit with your Testnet wallet's key." })));
       } else {
         // WALLET SIGNING HOOK: a connected browser wallet signs on the lease page, which first
         // checks the wallet's trust line and balance (lease.js lockStep).
@@ -163,23 +160,14 @@ onPersona((next) => {
   me = next;
   const isTenant = Boolean(me) && me.role === "tenant";
   $("[data-not-tenant]").hidden = isTenant || !me;
-  $("[data-become-tenant]").hidden = !config.demo_mode;
   $("[data-tenant-name]").textContent = me ? me.name : "…";
   $("[data-submit]").disabled = !isTenant;
 });
 
-$("[data-become-tenant]").addEventListener("click", async () => {
-  const tenant = personas.find((p) => p.role === "tenant");
-  if (tenant) { try { await actAs(tenant.party_id); } catch { /* shown by api.js */ } }
-});
-
 async function init() {
   onEndMode();
-  if (config.demo_mode) {
-    try { personas = (await get("/api/demo/personas/", { quiet: true })).personas; } catch { personas = []; }
-  }
-  fillPartySelect("landlord");
-  fillPartySelect("arbiter");
+  try { arbiters = (await get("/api/arbiters/", { quiet: true })).arbiters; } catch { arbiters = []; }
+  fillArbiters();
   const resume = new URLSearchParams(location.search).get("lease");
   if (resume && /^[0-9a-f-]{36}$/.test(resume)) watchSetup(resume);
 }

@@ -36,7 +36,7 @@ class LedgerMockedTestCase(TestCase):
     def setUpTestData(cls):
         def party(name, role):
             wallet = Wallet.create()
-            return Party.objects.create(display_name=name, role=role, address=wallet.address, seed=wallet.seed)
+            return Party.objects.create(display_name=name, role=role, address=wallet.address, seed=wallet.seed, is_persona=True)
 
         cls.tenant = party("Giulia Rossi", "tenant")
         cls.landlord = party("Marco Bianchi", "landlord")
@@ -92,6 +92,12 @@ class LedgerMockedTestCase(TestCase):
     def _execute(self, tx, signed):
         self.executed.append((tx, signed))
         return f"PAYHASH{len(self.executed)}"
+
+    def sign_in(self, party):
+        """Put an account into the test client's session (what registering or signing in does)."""
+        session = self.client.session
+        session["party_id"] = party.pk
+        session.save()
 
     def make_lease(self, status=S.DRAFT, **fields):
         lease = Lease.objects.create(
@@ -478,6 +484,10 @@ class ActionsTests(LedgerMockedTestCase):
 
 
 class ApiTests(LedgerMockedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.sign_in(self.tenant)
+
     def post(self, url, data=None):
         return self.client.post(url, data=json.dumps(data or {}), content_type="application/json")
 
@@ -489,7 +499,21 @@ class ApiTests(LedgerMockedTestCase):
                 "end_in_minutes": 60, "grace_minutes": 5, **changes}
         return self.post("/api/leases/", body)
 
-    def test_persona_defaults_to_the_tenant_and_can_be_switched(self):
+    def test_nobody_is_signed_in_by_default(self):
+        from django.test import Client
+
+        visitor = Client()
+        response = visitor.get("/api/me/")
+        self.assertEqual((response.status_code, response.json()["code"]), (401, "not_signed_in"))
+        self.assertEqual(visitor.get("/api/leases/").status_code, 401)
+        for url in ("/leases/", "/leases/new/", "/arbiter/", "/account/"):
+            page = visitor.get(url)
+            self.assertEqual((page.status_code, page["Location"]), (302, f"/login/?next={url}"), url)
+        for url in ("/", "/register/", "/login/", "/demo/stage/"):
+            self.assertEqual(visitor.get(url).status_code, 200, url)
+        self.assertEqual(visitor.get("/login/?next=https://evil.example/").context["next"], "/leases/")  # no open redirect
+
+    def test_personas_can_be_switched_by_scripts(self):
         me = self.client.get("/api/me/")
         self.assertEqual((me.json()["party_id"], me.json()["role"]), (self.tenant.pk, "tenant"))
         self.assertEqual(me.json()["balances"], {"XRP": "25", "EUR": "5000"})
@@ -498,19 +522,26 @@ class ApiTests(LedgerMockedTestCase):
         self.assertEqual(self.client.get("/api/me/").json()["role"], "arbiter")
         self.assertEqual(self.post("/api/demo/persona/", {"party_id": 99999}).status_code, 400)
         self.assertEqual(len(self.client.get("/api/demo/personas/").json()["personas"]), 4)
+        # A registered user's account is never reachable through the persona switch.
+        user = Party.objects.create(display_name="Ada L", first_name="Ada", last_name="L", role="tenant", address="rUser", seed="s")
+        self.assertEqual(self.post("/api/demo/persona/", {"party_id": user.pk}).json()["code"], "unknown_party")
 
     def test_demo_endpoints_are_off_outside_demo_mode(self):
         with self.settings(DEMO_MODE=False):
             for url in ("/api/demo/persona/", "/api/demo/fund/", "/api/demo/run-bot/"):
                 self.assertEqual(self.post(url, {"party_id": self.tenant.pk}).json()["code"], "demo_disabled")
-            self.assertEqual(self.client.get("/api/me/").json()["code"], "no_persona")
+            # Accounts whose key the server holds exist only in demo mode.
+            self.assertEqual(self.client.get("/api/me/").json()["code"], "not_signed_in")
+            body = {"first_name": "A", "last_name": "B", "role": "tenant", "accept_terms": True, "wallet": "testnet",
+                    "username": "someone", "password": "correct horse 9"}
+            self.assertEqual(self.post("/api/register/", body).json()["code"], "demo_disabled")
 
     def test_csrf_is_enforced_on_posts(self):
         from django.test import Client
 
         strict = Client(enforce_csrf_checks=True)
         self.assertEqual(strict.post("/api/demo/run-bot/", data="{}", content_type="application/json").status_code, 403)
-        token = strict.get("/api/me/").cookies["csrftoken"].value
+        token = strict.get("/api/demo/personas/").cookies["csrftoken"].value
         response = strict.post("/api/demo/run-bot/", data="{}", content_type="application/json", HTTP_X_CSRFTOKEN=token)
         self.assertEqual(response.status_code, 200)
 
@@ -651,30 +682,102 @@ class ApiTests(LedgerMockedTestCase):
         state = self.client.get(f"/api/leases/{lease.pk}/").json()
         self.assertEqual((state["status"], state["seconds_to_cancel_after"], state["escrow"]["exists"]), ("RETURNED", 0, False))
 
-    def link_wallet(self, wallet, role="landlord", signer=None, **changes):
-        message = self.client.get("/api/wallet/challenge/").json()["message"]
-        signature = keypairs.sign(message.encode(), (signer or wallet).private_key)
-        body = {"address": wallet.address, "role": role, "public_key": (signer or wallet).public_key, "signature": signature}
-        return self.post("/api/wallet/link/", {**body, **changes})
+    ACCOUNT = {"first_name": "  Ada ", "last_name": "Lovelace  King", "role": "landlord", "accept_terms": True}
 
-    def test_wallet_link_needs_a_signed_challenge(self):
+    def wallet_proof(self, wallet, signer=None):
+        message = self.client.get(f"/api/wallet/challenge/?address={wallet.address}").json()["message"]
+        signer = signer or wallet
+        return {"address": wallet.address, "public_key": signer.public_key, "signature": keypairs.sign(message.encode(), signer.private_key)}
+
+    def test_register_with_own_wallet_needs_a_signed_challenge(self):
         wallet = Wallet.create()
-        self.assertEqual(self.post("/api/wallet/link/", {"address": "nope", "role": "tenant"}).status_code, 400)
-        # No challenge was requested, a signature by another key, and a replayed signature are all refused.
-        unsigned = self.post("/api/wallet/link/", {"address": wallet.address, "role": "landlord"})
-        self.assertEqual((unsigned.status_code, unsigned.json()["code"]), (409, "challenge_expired"))
-        self.assertEqual(self.link_wallet(wallet, signer=Wallet.create()).json()["code"], "bad_signature")
+        body = {**self.ACCOUNT, "wallet": "gemwallet"}
+        self.assertEqual(self.post("/api/register/", {**body, "address": "nope"}).json()["code"], "bad_address")
+        # No challenge requested, and a signature made by another key, are both refused.
+        self.assertEqual(self.post("/api/register/", {**body, "address": wallet.address}).json()["code"], "challenge_expired")
+        self.assertEqual(self.post("/api/register/", {**body, **self.wallet_proof(wallet, Wallet.create())}).json()["code"], "bad_signature")
         self.assertFalse(Party.objects.filter(address=wallet.address).exists())
 
-        message = self.client.get("/api/wallet/challenge/").json()["message"]
-        body = {"address": wallet.address, "role": "landlord", "public_key": wallet.public_key,
-                "signature": keypairs.sign(message.encode(), wallet.private_key)}
-        linked = self.post("/api/wallet/link/", body)
-        self.assertEqual(linked.status_code, 200)
+        proof = self.wallet_proof(wallet)
+        created = self.post("/api/register/", {**body, **proof})
+        self.assertEqual(created.status_code, 201)
         party = Party.objects.get(address=wallet.address)
-        self.assertEqual((party.seed, party.wallet_type, linked.json()["party_id"]), (None, "gemwallet", party.pk))
+        self.assertEqual((party.seed, party.wallet_type, party.display_name, party.role), (None, "gemwallet", "Ada Lovelace King", "landlord"))
         self.assertEqual(self.client.get("/api/me/").json()["party_id"], party.pk)
-        self.assertEqual(self.post("/api/wallet/link/", body).json()["code"], "challenge_expired")  # one use only
+        self.ledger.fund_xrp.assert_not_called()  # the server never funds or holds a user's own wallet
+        # The same signature can't be replayed, and the wallet can't register twice.
+        self.assertEqual(self.post("/api/register/", {**body, **proof}).json()["code"], "challenge_expired")
+        self.assertEqual(self.post("/api/register/", {**body, **self.wallet_proof(wallet)}).json()["code"], "already_registered")
+
+        # Signing in later: the wallet, a fresh challenge, nothing else.
+        self.post("/api/logout/")
+        self.assertEqual(self.client.get("/api/me/").status_code, 401)
+        self.assertEqual(self.post("/api/wallet/link/", self.wallet_proof(wallet)).status_code, 200)
+        self.assertEqual(self.client.get("/api/me/").json()["party_id"], party.pk)
+        stranger = Wallet.create()
+        self.assertEqual(self.post("/api/wallet/link/", self.wallet_proof(stranger)).json()["code"], "not_registered")
+
+    def test_register_with_a_new_testnet_wallet(self):
+        issuer = Wallet.create()
+        PlatformWallet.objects.create(role="issuer_eur", address=ISSUER, seed=issuer.seed)
+        self.ledger.account_exists.return_value = False
+        body = {**self.ACCOUNT, "role": "tenant", "wallet": "testnet", "username": "Ada_L", "password": "correct horse 9"}
+        for change, code in (({"first_name": " "}, "bad_name"), ({"role": "admin"}, "bad_role"), ({"accept_terms": False}, "terms_required"),
+                             ({"username": "a b"}, "bad_username"), ({"password": "12345678"}, "bad_password"),
+                             ({"password": "short"}, "bad_password"), ({"wallet": "ledger"}, "bad_wallet")):
+            self.assertEqual(self.post("/api/register/", {**body, **change}).json()["code"], code, change)
+        self.assertFalse(Party.objects.filter(username="ada_l").exists())
+
+        created = self.post("/api/register/", body)
+        self.assertEqual(created.status_code, 201)
+        party = Party.objects.get(username="ada_l")
+        self.assertEqual((party.display_name, party.role, party.wallet_type, party.is_persona), ("Ada Lovelace King", "tenant", "demo", False))
+        self.assertTrue(party.seed and party.password.startswith("pbkdf2_"))
+        self.assertNotIn("correct horse", party.password)
+        for secret in (party.seed, party.password, "correct horse"):
+            self.assertNotIn(secret, created.content.decode())
+        # A new wallet is funded, gets its trust line, and a tenant gets test tokens for a deposit.
+        self.assertEqual(self.ledger.fund_xrp.call_args.args[1], party.address)
+        self.ledger.ensure_trust_line.assert_called()
+        self.ledger.issue_tokens.assert_called()
+        self.assertEqual(self.client.get("/api/me/").json()["username"], "ada_l")
+        self.assertEqual(self.post("/api/register/", {**body, "password": "another good 1"}).json()["code"], "username_taken")
+
+    def test_registration_survives_a_funding_failure(self):
+        self.ledger.account_exists.return_value = False
+        self.ledger.fund_xrp.side_effect = LedgerError("network_error", "offline")
+        body = {**self.ACCOUNT, "wallet": "testnet", "username": "owner1", "password": "correct horse 9"}
+        self.assertEqual(self.post("/api/register/", body).status_code, 201)  # funding runs in the background
+        me = self.client.get("/api/me/").json()
+        self.assertEqual((me["username"], me["funding"]), ("owner1", False))
+
+    def test_sign_in_with_username_and_password(self):
+        body = {**self.ACCOUNT, "wallet": "testnet", "username": "owner1", "password": "correct horse 9"}
+        self.assertEqual(self.post("/api/register/", body).status_code, 201)
+        self.post("/api/logout/")
+        for attempt in ({"username": "owner1", "password": "wrong"}, {"username": "nobody", "password": "correct horse 9"},
+                        {"username": "owner1"}, {"username": "giulia", "password": ""}):
+            response = self.post("/api/login/", attempt)
+            self.assertEqual((response.status_code, response.json()["code"]), (400, "bad_credentials"), attempt)
+        self.assertEqual(self.client.get("/api/me/").status_code, 401)
+        good = self.post("/api/login/", {"username": "OWNER1", "password": "correct horse 9"})
+        self.assertEqual((good.status_code, good.json()["role"]), (200, "landlord"))
+        # Guessing is slowed down per username.
+        cache.clear()
+        for _ in range(6):
+            self.post("/api/login/", {"username": "owner1", "password": "wrong"})
+        self.assertEqual(self.post("/api/login/", {"username": "owner1", "password": "correct horse 9"}).json()["code"], "too_many_attempts")
+
+    def test_owner_is_named_by_exact_username(self):
+        owner = Party.objects.create(display_name="Ada L", first_name="Ada", last_name="L", role="landlord", address=Wallet.create().address,
+                                     seed="s", username="ada_owner")
+        created = self.new_lease(landlord_id=None, landlord_address="Ada_Owner")
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(Lease.objects.get(pk=created.json()["lease_id"]).landlord, owner)
+        self.assertEqual(self.new_lease(landlord_id=None, landlord_address="ada").json()["code"], "unknown_party")  # no partial matches
+        self.assertEqual(self.new_lease(arbiter_id=None, arbiter_address="ada_owner").json()["code"], "unknown_party")  # wrong role
+        listed = self.client.get("/api/arbiters/").json()["arbiters"]
+        self.assertEqual([a["name"] for a in listed], ["Bari Housing Mediation"])  # owners and tenants are never listed
 
     def test_a_wallet_party_can_propose_but_not_approve(self):
         wallet = Wallet.create()
@@ -695,7 +798,7 @@ class ApiTests(LedgerMockedTestCase):
 
     def test_lease_with_a_pasted_landlord_address(self):
         address = Wallet.create().address
-        self.assertEqual(self.new_lease(landlord_id=None, landlord_address="rNope").json()["code"], "bad_address")
+        self.assertEqual(self.new_lease(landlord_id=None, landlord_address="rNope!").json()["code"], "bad_address")
         self.ledger.account_exists.return_value = False
         self.assertEqual(self.new_lease(landlord_id=None, landlord_address=address).json()["code"], "unknown_account")
         self.ledger.account_exists.return_value = True
@@ -726,7 +829,7 @@ class ApiTests(LedgerMockedTestCase):
 
     def test_pages_render_with_a_strict_csp_and_no_secrets(self):
         lease = self.make_lease(S.ACTIVE)
-        for url in ("/", "/leases/", "/leases/new/", f"/leases/{lease.pk}/", f"/verify/{lease.pk}/", "/arbiter/", "/demo/",
+        for url in ("/", "/leases/", "/leases/new/", f"/leases/{lease.pk}/", f"/verify/{lease.pk}/", "/arbiter/", "/account/",
                     "/demo/stage/", "/legal/terms/", "/legal/privacy/"):
             response = self.client.get(url)
             self.assertEqual(response.status_code, 200, url)
@@ -737,6 +840,8 @@ class ApiTests(LedgerMockedTestCase):
             self.assertNotIn(" style=", html)
             self.assertNotIn("onclick", html)
         self.assertEqual(self.client.get("/leases/00000000-0000-0000-0000-000000000000/").status_code, 404)
+        self.assertEqual(self.client.get("/demo/").status_code, 404)  # the personas page is gone
+        self.assertEqual(self.client.get("/register/")["Location"], "/leases/")  # already signed in
         public = self.client.get(f"/api/leases/{lease.pk}/public/").content.decode()
         self.assertNotIn(lease.fulfillment_hex, public)
 
@@ -784,6 +889,7 @@ class ApiTests(LedgerMockedTestCase):
 
 class DemoResetTests(LedgerMockedTestCase):
     def test_reset_archives_leases_without_touching_the_ledger(self):
+        self.sign_in(self.tenant)
         lease = self.make_lease(S.ACTIVE)
         call_command("demo_reset", stdout=mock.MagicMock())
         lease.refresh_from_db()

@@ -46,8 +46,8 @@ class Command(BaseCommand):
                 self.fail(f"{role}: flags missing {flags}. Rerun bootstrap_demo.")
 
         # 3. Token escrow round trip.
-        tenant = Party.objects.filter(role="tenant", wallet_type="demo").first()
-        landlord = Party.objects.filter(role="landlord", wallet_type="demo").first()
+        tenant = Party.objects.filter(role="tenant", is_persona=True).first()
+        landlord = Party.objects.filter(role="landlord", is_persona=True).first()
         eur = Currency.objects.filter(code="EUR").first()
         if not (tenant and landlord and eur):
             self.fail("Demo personas or the EUR currency are missing. Run bootstrap_demo first.")
