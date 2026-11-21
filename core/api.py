@@ -39,7 +39,7 @@ EVIDENCE_TYPES = {  # extension -> file signature check
     ".png": lambda head: head[:8] == b"\x89PNG\r\n\x1a\n",
     ".webp": lambda head: head[:4] == b"RIFF" and head[8:12] == b"WEBP",
 }
-SERVER_SIDE_CODES = {"network_error", "unknown"}
+SERVER_SIDE_CODES = {"network_error", "unknown", "xaman_error", "xaman_not_configured"}
 EVIDENCE_CONTENT_TYPES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
 
@@ -344,8 +344,10 @@ def xaman_cancel(request, request_id):
     req = _request_for(request, request_id)
     if req.status == XamanRequest.Status.OPEN:
         xaman.cancel_payload(req.xaman_uuid)
-        req.status = XamanRequest.Status.REJECTED
-        req.save(update_fields=["status"])
+        req = signing.refresh(req)  # the user may have signed first: ask Xaman and finish it
+        if req.status == XamanRequest.Status.OPEN:
+            XamanRequest.objects.filter(pk=req.pk, status=XamanRequest.Status.OPEN).update(status=XamanRequest.Status.REJECTED)
+            req.refresh_from_db()
     return signing.present(req)
 
 
@@ -595,9 +597,17 @@ def lease_public(request, lease_id):
 def invite(request, token):
     item = agreements.invite_for(token)
     lease, party = item.lease, current_party(request, required=False)
+    used = bool(item.accepted_by_id or item.declined_at)
+    by_you = bool(party and item.accepted_by_id == party.pk)
+    if used and not by_you:  # a spent link reveals nothing about the agreement
+        return {
+            "role": item.role, "used": True, "accepted_by_you": False, "signed_in": party is not None,
+            "already_party": bool(party and lease.role_of(party)),
+            "lease": {"status": lease.status, "status_label": lease.get_status_display()},
+        }
     return {
-        "role": item.role, "used": bool(item.accepted_by_id or item.declined_at),
-        "accepted_by_you": bool(party and item.accepted_by_id == party.pk),
+        "role": item.role, "used": used,
+        "accepted_by_you": by_you,
         "signed_in": party is not None, "already_party": bool(party and lease.role_of(party) and item.accepted_by_id != party.pk),
         "lease": {
             "id": str(lease.pk), "title": lease.title, "status": lease.status, "status_label": lease.get_status_display(),

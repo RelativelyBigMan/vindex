@@ -924,6 +924,31 @@ class ApiTests(LedgerMockedTestCase):
         landlord_view = self.client.get(f"/api/leases/{lease_id}/").json()
         self.assertEqual(landlord_view["role"], "landlord")
 
+        self.login(self.tenant)  # the invite is spent: someone else sees no terms
+        spent = self.client.get(f"/api/invites/{token}/").json()
+        self.assertEqual(set(spent), {"role", "used", "accepted_by_you", "signed_in", "already_party", "lease"})
+        self.assertEqual((spent["used"], spent["accepted_by_you"]), (True, False))
+        self.assertEqual(set(spent["lease"]), {"status", "status_label"})
+
+    def test_cancel_keeps_a_request_that_was_signed_meanwhile(self):
+        address = Wallet.create().address
+        started = self.post("/api/auth/signin/").json()
+        self.get_payload.return_value = {"status": "signed", "account": address, "hex": "", "txid": "", "user_token": ""}
+        with mock.patch.object(xaman, "cancel_payload"):
+            done = self.post(f"/api/xaman/requests/{started['request_id']}/cancel/").json()
+        self.assertEqual(done["status"], "done")
+
+    def test_cancel_rejects_a_request_that_is_still_open(self):
+        started = self.post("/api/auth/signin/").json()
+        with mock.patch.object(xaman, "cancel_payload"):
+            result = self.post(f"/api/xaman/requests/{started['request_id']}/cancel/").json()
+        self.assertEqual(result["status"], "rejected")
+
+    def test_xaman_outage_is_a_server_error(self):
+        with mock.patch.object(xaman, "create_payload", side_effect=LedgerError("xaman_error", "Xaman is down.")):
+            response = self.post("/api/auth/signin/")
+        self.assertEqual((response.status_code, response.json()["code"]), (500, "xaman_error"))
+
     def test_create_agreement_validates_input(self):
         self.login(self.tenant)
         base = {"role": "tenant", "currency": "EUR", "amount": "1000", "end_in_minutes": 120, "grace_minutes": 5}
