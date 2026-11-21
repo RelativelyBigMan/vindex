@@ -7,7 +7,7 @@
 <div data-lease-page data-lease-id="{{ lease_id }}">
   <div class="page-header row row--between">
     <div>
-      <p class="small mt-0"><a href="{% url 'escrow:dashboard' %}">← My leases</a></p>
+      <p class="small mt-0"><a href="{% url 'escrow:dashboard' %}">← My deposits</a></p>
       <h1 data-title><span class="skeleton"></span></h1>
       <p data-subtitle></p>
     </div>
@@ -18,7 +18,7 @@
 
   <div class="card empty" data-forbidden hidden>
     <p data-forbidden-text>This deposit isn't visible to your account.</p>
-    <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">My leases</a>
+    <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">My deposits</a>
   </div>
 
   <div data-content hidden>

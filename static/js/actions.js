@@ -43,11 +43,11 @@ export async function addTrustLine(currency) {
 
 export async function uploadEvidence(leaseId, form) {
   const item = await api(`/api/leases/${leaseId}/evidence/`, { method: "POST", form });
-  return anchorEvidence(item).then(() => item, (error) => ({ ...item, anchor_error: error.message }));
+  return anchorEvidence(item, { quiet: true }).then(() => item, (error) => ({ ...item, anchor_error: error.message }));
 }
 
-export async function anchorEvidence(item) {
-  await signWithXaman(() => post(`/api/evidence/${item.id}/anchor/`, {}, { quiet: true }), { title: "Anchor the photo" });
+export async function anchorEvidence(item, { quiet = false } = {}) {
+  await signWithXaman(() => post(`/api/evidence/${item.id}/anchor/`, {}, { quiet }), { title: "Anchor the photo" });
 }
 
 /**

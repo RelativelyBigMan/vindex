@@ -2,7 +2,7 @@
 import { get, post } from "../api.js";
 import { startSignIn } from "../app.js";
 import { config } from "../session.js";
-import { ROLE_LABEL, busy, el, fill, fmtTime, money } from "../ui.js";
+import { ROLE_LABEL, busy, el, fill, fmtTime, money, toast } from "../ui.js";
 
 const root = document.querySelector("[data-invite-page]");
 const token = root.dataset.token;
@@ -46,7 +46,9 @@ async function render() {
   if (data.used) return fill(decision, el("p", { class: "alert alert--warning", text: "This invite has already been used." }));
   if (!data.signed_in) {
     return fill(decision, el("p", { text: "Sign in with Xaman to accept. Signing in for the first time creates your account." }),
-      el("button", { type: "button", class: "btn btn--primary", text: "Sign in with Xaman", on: { click: async (e) => { await startSignIn(e.currentTarget); await render(); } } }));
+      el("button", { type: "button", class: "btn btn--primary", text: "Sign in with Xaman", on: { click: async (e) => {
+        try { await startSignIn(e.currentTarget); await render(); } catch (error) { if (!error.code) toast(error.message, "error"); }
+      } } }));
   }
   if (data.already_party) return fill(decision, el("p", { class: "alert alert--warning", text: "You already have another role in this agreement." }));
   return fill(decision,
@@ -61,7 +63,11 @@ async function decide(button, what) {
     try {
       const result = await post(`/api/invites/${token}/${what}/`);
       if (result.lease_id) window.location.assign(`/leases/${result.lease_id}/`);
-      else await render();
+      else if (what === "decline") {
+        $("[data-subtitle]").textContent = "";
+        $("[data-terms]").hidden = true;
+        fill($("[data-decision]"), el("p", { text: "You declined this invitation. The agreement is closed." }));
+      } else await render();
     } catch { /* shown by api.js */ }
   });
 }

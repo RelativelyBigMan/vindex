@@ -103,8 +103,12 @@
 <section class="sec center" aria-labelledby="sec-start">
   <h2 class="sec__title sec__title--center" id="sec-start">Get started</h2>
   <div class="row row--center">
+    {% if escrow_config.signed_in %}
     <a class="btn btn--primary btn--lg" href="{% url 'escrow:lease_create' %}">Protect a deposit</a>
     <a class="btn btn--ghost btn--lg" href="{% url 'escrow:dashboard' %}">View my deposits</a>
+    {% else %}
+    <button type="button" class="btn btn--primary btn--lg" data-home-signin>Sign in with Xaman</button>
+    {% endif %}
   </div>
 </section>
 {% endblock %}

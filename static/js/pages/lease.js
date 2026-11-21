@@ -84,12 +84,13 @@ function render() {
   }
   previousStatus = s.status;
   // The return date never moves, so a slow (stale) answer can only make it look later: keep the earliest.
-  deadline = Math.min(deadline ?? Infinity, Date.now() + s.seconds_to_cancel_after * 1000);
+  if (typeof s.seconds_to_cancel_after === "number") deadline = Math.min(deadline ?? Infinity, Date.now() + s.seconds_to_cancel_after * 1000);
+  else deadline = null;
 
   renderIfChanged($("[data-outcome]"), [s.status, s.error, s.proposals.find((p) => p.status === "EXECUTED")], (node) => renderOutcome(node, s, tenant));
   renderIfChanged($("[data-parties]"), [s.parties, s.open_roles, me?.party_id], (node) => node.replaceChildren(
     ...s.parties.map((p) => partyCard(p, me)),
-    ...s.open_roles.map((role) => el("article", { class: `card party role-${role}` }, el("p", { class: "sc muted", text: ROLE_LABEL[role] }), el("p", { class: "muted", text: "Not accepted yet" })))));
+    ...s.open_roles.map((role) => el("article", { class: `card party party--${role}` }, el("p", { class: "sc muted", text: ROLE_LABEL[role] }), el("p", { class: "muted", text: "Not accepted yet" })))));
   renderAgreement(s);
   const onLedger = !["PENDING_ACCEPTANCE", "CANCELLED"].includes(s.status) || Boolean(s.settlement);
   $("[data-ledger-cards]").hidden = !onLedger;
