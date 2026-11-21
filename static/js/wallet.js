@@ -64,6 +64,10 @@ export class DemoWallet extends WalletAdapter {
 }
 
 export class GemWallet extends WalletAdapter {
+  /** Time for the previous popup window to close before the next request opens one. */
+  static GAP_MS = 700;
+  static lastClosed = 0;
+
   constructor() { super("gemwallet", "GemWallet"); }
 
   async sdk() {
@@ -88,29 +92,49 @@ export class GemWallet extends WalletAdapter {
     return response.result;
   }
 
-  async connect() {
+  /**
+   * Every GemWallet request opens its own popup window. When a popup closes, the extension
+   * rejects whichever request is current at that moment (chrome.windows.onRemoved ->
+   * buildRejectMessage), so a request sent while the previous popup is still closing comes
+   * back as a "reject" the user never chose. Space requests out, and retry read-only ones.
+   */
+  async request(call, what, { retry = false } = {}) {
     const sdk = await this.sdk();
-    return GemWallet.result(await sdk.getAddress(), "Sharing the address").address;
+    const attempts = retry ? 3 : 1;
+    for (let attempt = 1; ; attempt += 1) {
+      const wait = GemWallet.lastClosed + GemWallet.GAP_MS - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      let response;
+      try {
+        response = await call(sdk);
+      } finally {
+        GemWallet.lastClosed = Date.now();
+      }
+      if (response?.type !== "reject" && response?.result) return response.result;
+      if (attempt >= attempts) return GemWallet.result(response, what);
+    }
+  }
+
+  async connect() {
+    return (await this.request((sdk) => sdk.getAddress(), "Sharing the address", { retry: true })).address;
   }
 
   async getNetwork() {
-    const sdk = await this.sdk();
-    return String(GemWallet.result(await sdk.getNetwork(), "Reading the network").network || "");
+    const result = await this.request((sdk) => sdk.getNetwork(), "Reading the network", { retry: true });
+    return String(result.network || "");
   }
 
   async signAndSubmit(tx) {
-    const sdk = await this.sdk();
     // The wallet adds its own signature fields; ours are placeholders from the server's autofill.
     const { SigningPubKey: _key, TxnSignature: _signature, ...transaction } = tx;
-    const result = GemWallet.result(await sdk.submitTransaction({ transaction }), "The transaction");
+    const result = await this.request((sdk) => sdk.submitTransaction({ transaction }), "The transaction");
     if (!result.hash) throw new WalletError("GemWallet didn't return a transaction hash.");
     return { hash: result.hash };
   }
 
   async signMessage(message) {
-    const sdk = await this.sdk();
-    const key = GemWallet.result(await sdk.getPublicKey(), "Sharing the public key");
-    const signed = GemWallet.result(await sdk.signMessage(message), "Signing in");
+    const key = await this.request((sdk) => sdk.getPublicKey(), "Sharing the public key", { retry: true });
+    const signed = await this.request((sdk) => sdk.signMessage(message), "Signing in");
     return { signature: signed.signedMessage, publicKey: key.publicKey, address: key.address };
   }
 }
@@ -125,6 +149,28 @@ function assertNetwork(walletNetwork) {
 }
 
 /**
+ * Check the wallet is on this site's network. GemWallet answers getNetwork from a hidden 1x1
+ * popup; in some browsers that window is closed before it replies and the API returns a bare
+ * "reject". Then fall back to the ledger itself: the address must exist on this network.
+ * This is a convenience check only: the server verifies every wallet transaction on its own network.
+ */
+async function checkNetwork(wallet, address) {
+  let network;
+  try {
+    network = await wallet.getNetwork();
+  } catch (error) {
+    if (!(error instanceof WalletError)) throw error;
+    const { withLedger, optional } = await import("./ledger.js");
+    const account = await withLedger((request) => optional(request({ command: "account_info", account: address, ledger_index: "validated" })));
+    if (!account) {
+      throw new WalletError(`GemWallet didn't tell us its network, and ${address} has no account on ${config.network.name}. Switch GemWallet to ${config.network.name} (and fund the account from the faucet), then try again.`);
+    }
+    return;
+  }
+  assertNetwork(network);
+}
+
+/**
  * Connect GemWallet and prove ownership of its address to the server with one signed challenge.
  * @param {(known: string|null) => Promise<string|null>} askRole  called for a wallet the server hasn't seen
  */
@@ -134,7 +180,7 @@ export async function connectBrowserWallet(askRole) {
     throw new WalletError("GemWallet wasn't found in this browser. Install the extension, or keep using the demo personas.");
   }
   const address = await wallet.connect();
-  assertNetwork(await wallet.getNetwork());
+  await checkNetwork(wallet, address);
   const challenge = await get(`/api/wallet/challenge/?address=${encodeURIComponent(address)}`);
   let role = challenge.known_role;
   if (!role) {
@@ -161,7 +207,7 @@ export async function walletFor(me = currentMe()) {
   if (address !== me.address) {
     throw new WalletError("GemWallet is on a different account than the one you connected. Switch accounts in the wallet, or reconnect.");
   }
-  assertNetwork(await wallet.getNetwork());
+  await checkNetwork(wallet, address);
   return wallet;
 }
 
