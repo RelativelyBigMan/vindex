@@ -159,6 +159,12 @@ def _sign_in(request, party):
 
 
 def _client_ip(request):
+    """The visitor's address, for rate limits. Behind a tunnel every request arrives from the tunnel
+    itself, so the proxy's header is used, and only when the server is told it sits behind one."""
+    if settings.BEHIND_PROXY:
+        forwarded = request.META.get("HTTP_CF_CONNECTING_IP") or request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0]
+        if forwarded.strip():
+            return forwarded.strip()[:64]
     return request.META.get("REMOTE_ADDR", "unknown")
 
 

@@ -18,7 +18,22 @@ SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "")
 if not SECRET_KEY or SECRET_KEY.startswith("change-me"):
     raise ImproperlyConfigured("Set DJANGO_SECRET_KEY in .env (copy .env.example and put a long random string in it).")
 
-ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]").split(",") if h]
+def env_list(name, default=""):
+    return [item.strip() for item in os.environ.get(name, default).split(",") if item.strip()]
+
+
+# Host names this site answers to. "localhost" names are always allowed; scripts/serve.py adds the
+# machine's network address or the tunnel's domain when the site is shared with other people.
+ALLOWED_HOSTS = env_list("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1,[::1]")
+# Needed when the site is reached through an HTTPS address that differs from what Django sees
+# (a tunnel or reverse proxy), e.g. https://*.trycloudflare.com
+CSRF_TRUSTED_ORIGINS = env_list("DJANGO_CSRF_TRUSTED_ORIGINS")
+# Set ONLY when every request really comes through a tunnel or reverse proxy: then its headers say
+# whether the visitor used HTTPS and what the visitor's address is. Without a proxy in front,
+# anyone could forge those headers, so this stays off by default.
+BEHIND_PROXY = env_bool("DJANGO_BEHIND_PROXY", "0")
+if BEHIND_PROXY:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 # testnet | devnet. Validated (and mainnet refused) in ledger/client.py.
 XRPL_NETWORK = os.environ.get("XRPL_NETWORK", "testnet").strip().lower()

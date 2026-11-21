@@ -111,3 +111,4 @@ config/ (settings, urls) | core/ (models, lifecycle.py, api.py, views.py, manage
   - /api/demo/persona/ and /api/demo/personas/ still exist for the scripts and only reach is_persona parties (the bootstrap accounts), never a registered user.
   - POST /api/leases/: landlord_address / arbiter_address accept an exact username or an address. No user directory, on purpose (privacy).
   - New-wallet funding runs in a background thread (api._provision_new_account); GET /api/me/ has 'funding' while it runs.
+- Sharing (2026-11-21): scripts/serve.py runs runserver (--insecure, DEBUG off) plus run_bot, on 0.0.0.0 for the local network or behind `cloudflared` with --tunnel. Settings read DJANGO_ALLOWED_HOSTS, DJANGO_CSRF_TRUSTED_ORIGINS and DJANGO_BEHIND_PROXY (trust X-Forwarded-Proto and the forwarded client address; only behind a real proxy). Plain-http origins have no clipboard or crypto.subtle, so Copy and evidence Verify need https or localhost.

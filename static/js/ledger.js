@@ -39,6 +39,8 @@ export function textToHex(text) {
 }
 
 export async function sha256Hex(buffer) {
+  // Browsers only offer this on https:// addresses and on localhost.
+  if (!globalThis.crypto?.subtle) throw new Error("this check needs the site to be opened over https");
   const digest = await crypto.subtle.digest("SHA-256", buffer);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }

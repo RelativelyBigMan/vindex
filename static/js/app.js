@@ -51,6 +51,7 @@ function initCopy() {
     const btn = e.target instanceof Element ? e.target.closest("[data-copy]") : null;
     if (!btn) return;
     try {
+      if (!navigator.clipboard) throw new Error("no clipboard on plain http"); // only https:// and localhost have one
       await navigator.clipboard.writeText(btn.dataset.copy || "");
       // Brief "Copied" label on the button itself, then restore.
       btn.dataset.label ||= btn.textContent;

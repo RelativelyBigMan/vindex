@@ -67,7 +67,7 @@ static/js/     app.js (global), api.js, ui.js, poll.js, session.js, wallet.js (a
                actions.js, parts.js, splitform.js, dec.js, fx.js, sound.js, pages/
 static/css/    global.css ("whitepaper" theme)
 static/vendor/ xrpl.js 5.3.0 (committed), @gemwallet/api 3.8.0 (fetched by scripts/fetch_vendor.py)
-scripts/       setup.py (cross-platform setup), api_walkthrough.py, wallet_walkthrough.py, fetch_vendor.py
+scripts/       setup.py (cross-platform setup), serve.py (share the site), api_walkthrough.py, wallet_walkthrough.py, fetch_vendor.py
 ```
 
 Pages are shells; each page's module renders from the JSON API. What a persona may do comes only from the API's
@@ -125,6 +125,40 @@ Checks (shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead o
 4. **A**: watch the countdown reach zero. About 10 s later the bot returns the deposit. If the bot isn't running, the
    column offers *Run bot now* once 20 s have passed.
 5. Open *Public check* on any column: the browser verifies the deposit on the ledger itself.
+
+## Letting other people use it
+
+Run the site on your computer and let others open it, with one command (it starts the website and the return bot,
+and stops both with Ctrl+C). On Windows use `py scripts\serve.py` instead of `python3 scripts/serve.py`.
+
+```bash
+python3 scripts/serve.py
+```
+
+People on the **same Wi-Fi or network** open the `http://192.168.x.x:8000` address it prints. Your firewall may ask
+to allow Python. Over plain http their browsers switch off two things: the Copy buttons and the photo *Verify* check.
+
+```bash
+python3 scripts/serve.py --tunnel
+```
+
+**Anyone with the link**, anywhere: this opens a public `https://….trycloudflare.com` address through Cloudflare
+Tunnel, where everything works. It needs the free `cloudflared` program
+([download](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)) and no account.
+The address is random, changes on every run and stops working when you press Ctrl+C.
+
+What the script sets for that run (nothing is written to `.env`): debug pages off, only the needed host names
+accepted, and with `--tunnel` the server listens on this computer only and trusts the tunnel's headers for https and
+for each visitor's address. Options: `--port 8001`, `--no-bot`.
+
+Before sharing a public link, know that:
+
+- anyone who has it can create an account and gets a funded **Testnet** wallet (limited to 6 new wallets per hour
+  per visitor); nothing has real value, but the test treasury can be drained;
+- names people enter are stored in `db.sqlite3` on your computer: you are responsible for that data;
+- it runs on Django's development server and SQLite, which is fine for a demo with a handful of people and not
+  meant for more;
+- your computer must stay on and awake.
 
 ## Accounts
 
