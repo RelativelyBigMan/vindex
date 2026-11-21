@@ -1,4 +1,4 @@
-"""Prove the network is usable for the demo: server reachable, issuers configured, token escrow works."""
+"""Prove the network is usable: server reachable, issuers configured, token escrow works (throw-away wallets)."""
 import time
 from datetime import timedelta
 from decimal import Decimal
@@ -9,13 +9,13 @@ from xrpl.models.transactions import EscrowCancel, EscrowCreate
 from xrpl.utils import datetime_to_ripple_time
 from xrpl.wallet import Wallet
 
-from core.models import Currency, Party, PlatformWallet
+from core.models import Currency, PlatformWallet
 from ledger import services
 from ledger.client import explorer_tx, get_client, network
 from ledger.conditions import make_condition
 from ledger.errors import LedgerError
 
-DISABLED_HINT = "Token escrow is disabled on this network; set XRPL_NETWORK=devnet and rerun bootstrap_demo."
+DISABLED_HINT = "Token escrow is disabled on this network; set XRPL_NETWORK=devnet and rerun bootstrap."
 
 
 class Command(BaseCommand):
@@ -37,23 +37,34 @@ class Command(BaseCommand):
         for role in ("issuer_eur", "issuer_usd"):
             row = PlatformWallet.objects.filter(role=role).first()
             if not row:
-                self.fail(f"{role}: missing. Run bootstrap_demo first.")
+                self.fail(f"{role}: missing. Run bootstrap first.")
                 continue
             flags = services.get_account_flags(row.address, client)
             if flags["default_ripple"] and flags["allow_trustline_locking"]:
                 self.ok(f"{role}: DefaultRipple and Allow Trust Line Locking are set")
             else:
-                self.fail(f"{role}: flags missing {flags}. Rerun bootstrap_demo.")
+                self.fail(f"{role}: flags missing {flags}. Rerun bootstrap.")
 
         # 3. Token escrow round trip.
-        tenant = Party.objects.filter(role="tenant", wallet_type="demo").first()
-        landlord = Party.objects.filter(role="landlord", wallet_type="demo").first()
         eur = Currency.objects.filter(code="EUR").first()
-        if not (tenant and landlord and eur):
-            self.fail("Demo personas or the EUR currency are missing. Run bootstrap_demo first.")
+        treasury_row = PlatformWallet.objects.filter(role="treasury").first()
+        issuer_row = PlatformWallet.objects.filter(role="issuer_eur").first()
+        if not (eur and treasury_row and issuer_row):
+            self.fail("The EUR currency or the platform wallets are missing. Run bootstrap first.")
             return self.finish()
+        treasury = Wallet.from_seed(treasury_row.seed)
+        issuer = Wallet.from_seed(issuer_row.seed)
         try:
-            self.escrow_round_trip(client, Wallet.from_seed(tenant.seed), landlord.address, eur)
+            if services.get_balances(treasury.address, client)["XRP"] < Decimal("40"):
+                services.faucet_top_up(treasury)
+            tenant, landlord = Wallet.create(), Wallet.create()
+            for wallet in (tenant, landlord):
+                services.fund_xrp(treasury, wallet.address, Decimal("15"))
+            services.ensure_trust_line(tenant, "EUR", eur.issuer_address)
+            services.ensure_trust_line(landlord, "EUR", eur.issuer_address)
+            services.issue_tokens(issuer, tenant.address, "EUR", Decimal("5"))
+            self.ok("Throw-away tenant and landlord funded (15 XRP, 5 EUR)")
+            self.escrow_round_trip(client, tenant, landlord.address, eur)
         except LedgerError as exc:
             if exc.engine_result == "temDISABLED":
                 self.fail(DISABLED_HINT)

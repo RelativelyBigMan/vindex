@@ -3,9 +3,9 @@
 **Your deposit, returned by the ledger.** safeDeposit (repo: decelsus) protects rental security deposits with native
 XRP Ledger features. The tenant locks the deposit in a token escrow. If the lease ends normally, the ledger hands it
 back and nobody has to approve anything. If the tenant moves out early or the landlord claims damage, the deposit moves
-to an account that only two of tenant, landlord and an independent, credentialed arbiter can spend from together.
-safeDeposit never holds the money and cannot move it. Built in 24 hours for IXH26 (Track 2, XRPL applications);
-demo-ready, not production-ready.
+to an account that only two of tenant, landlord and an independent arbiter can spend from together.
+safeDeposit never holds the money and cannot move it. Built for IXH26 (Track 2, XRPL applications). Runs on the XRPL
+Testnet with real Xaman accounts; not for mainnet.
 
 ## How it works
 
@@ -47,29 +47,50 @@ sequenceDiagram
 | Multisig: SignerList (quorum 2 of 3) with the master key disabled | the per-lease settlement account |
 | Issued tokens and trust lines, `lsfAllowTrustLineLocking` | test EUR and USD |
 | Memos | evidence photos: only the SHA-256 is anchored (`safedeposit/evidence`) |
-| Credentials | the arbiter's `VERIFIED_ARBITER` credential, issued by a registry account and accepted by the arbiter |
 | Batch | not used: the amendment is not enabled on Testnet (checked 2026-11-20). Payouts are sequential payments. |
 
 ## Architecture
 
-Django 5.2 + xrpl-py on the server, server-rendered templates, vanilla JS ES modules + xrpl.js in the browser. No build
-step, no frameworks, no CDNs.
+Django 5.2 + xrpl-py on the server, server-rendered templates, vanilla JS ES modules in the browser, Xaman for every
+signature (REST API in `ledger/xaman.py`, QR codes by `segno`). No build step, no frameworks, no CDNs.
 
 ```
 config/        settings, urls
-ledger/        client.py (network allow-list, refuses mainnet), services.py (every ledger operation), conditions.py, errors.py
-core/          models.py, lifecycle.py (guarded state machine), api.py (JSON API), views.py (page shells),
+ledger/        client.py (network allow-list, refuses mainnet), services.py (every ledger operation), xaman.py (Xaman REST),
+               conditions.py, errors.py
+core/          models.py, agreements.py (draft, invites, arbiter approval), signing.py (Xaman sign requests),
+               faucet.py (test funds), lifecycle.py (guarded state machine, bot), api.py (JSON API), views.py (page shells),
                middleware.py (CSP), context.py, management/commands/
-templates/     base.html, partials/, escrow/ (home, demo, dashboard, lease_create, lease_detail, arbiter, verify, stage), legal/
-static/js/     app.js (global), api.js, ui.js, poll.js, session.js, wallet.js (adapters), ledger.js (browser reads),
+templates/     base.html, partials/, escrow/ (home, dashboard, lease_create, lease_detail, invite, verify), legal/
+static/js/     app.js (global), api.js, ui.js, poll.js, session.js, ledger.js (browser reads),
                actions.js, parts.js, splitform.js, dec.js, fx.js, sound.js, pages/
 static/css/    global.css ("whitepaper" theme)
-static/vendor/ xrpl.js 5.3.0 (committed), @gemwallet/api 3.8.0 (fetched by scripts/fetch_vendor.py)
-scripts/       setup.py (cross-platform setup), api_walkthrough.py, wallet_walkthrough.py, fetch_vendor.py
+static/vendor/ xrpl.js (committed; browser ledger reads for the public verify page)
+scripts/       setup.py (cross-platform setup), fetch_vendor.py
 ```
 
-Pages are shells; each page's module renders from the JSON API. What a persona may do comes only from the API's
+Pages are shells; each page's module renders from the JSON API. What an account may do comes only from the API's
 `actions` list, and the API enforces the same list.
+
+## Accounts and signing
+
+Nobody has a password. You sign in with Xaman (QR code, deep link or push notification). Every action that touches
+the ledger is a Xaman sign request: locking the deposit, adding a trust line, anchoring a photo, approving a payout.
+Settlement approvals are Xaman multisignatures: each of the two approvers signs the payout for the settlement account,
+and the server combines the signatures and submits. Releasing the escrow early is submitted by the platform's bot
+account (the ledger lets any account do it), so the release secret stays on the server and never reaches a browser.
+
+## Agreements
+
+1. A tenant or landlord drafts an agreement (amount, token, end date, grace period, optional arbiter address). The
+   server creates one invite link per missing party.
+2. Everyone opens their link, signs in and accepts. Links are shared by hand (no email).
+3. Tenant and landlord both approve the arbiter.
+4. The settlement account is set up in the background (fund, trust line, SignerList 2 of 3, master key disabled).
+5. The tenant locks the deposit by signing the EscrowCreate in Xaman.
+
+Until the deposit is locked an agreement can be cancelled. If a deposit is locked after cancellation, the bot returns
+it to the tenant anyway.
 
 ## Setup
 
@@ -79,97 +100,78 @@ packages, `.env` with a fresh secret key, browser libraries, database). It is sa
 Windows 11 (PowerShell or Command Prompt):
 
 ```bash
-py scripts\setup.py --demo
+py scripts\setup.py --bootstrap
 ```
 
 macOS / Linux:
 
 ```bash
-python3 scripts/setup.py --demo
+python3 scripts/setup.py --bootstrap
 ```
 
-`--demo` also creates the demo wallets on the XRPL test network and runs the preflight check (about 2 minutes, needs
-internet). Then run the app, each command in its own terminal. On Windows the virtual environment's Python is
+`--bootstrap` also creates the platform wallets (treasury, bot, EUR and USD issuers) on the XRPL test network and runs
+the preflight check (about 2 minutes, needs internet).
+
+Xaman keys: register an app at https://apps.xumm.dev (free), then put its key and secret in `.env` as `XAMAN_API_KEY`
+and `XAMAN_API_SECRET`. In the Xaman app on your phone, switch to Testnet (Settings, Advanced, Node).
+
+Then run the app, each command in its own terminal. On Windows the virtual environment's Python is
 `.venv\Scripts\python`; on macOS / Linux it is `.venv/bin/python`.
 
 | Step | Windows 11 | macOS / Linux |
 |---|---|---|
 | Web app, http://127.0.0.1:8000 | `.venv\Scripts\python manage.py runserver` | `.venv/bin/python manage.py runserver` |
-| Return bot | `.venv\Scripts\python manage.py run_bot` | `.venv/bin/python manage.py run_bot` |
-| Stage leases A, B, C | `.venv\Scripts\python manage.py demo_scenarios` | `.venv/bin/python manage.py demo_scenarios` |
+| Platform bot (returns deposits, closes expired agreements) | `.venv\Scripts\python manage.py run_bot` | `.venv/bin/python manage.py run_bot` |
 
 Doing it by hand instead: create a virtual environment, `pip install -r requirements.txt`, copy `.env.example` to
-`.env` and set `DJANGO_SECRET_KEY`, then run `scripts/fetch_vendor.py`, `manage.py migrate`, `manage.py bootstrap_demo`
-and `manage.py preflight` with the virtual environment's Python.
+`.env` and set `DJANGO_SECRET_KEY` and the Xaman keys, then run `scripts/fetch_vendor.py`, `manage.py migrate`,
+`manage.py bootstrap` and `manage.py preflight` with the virtual environment's Python.
 
-Keep `DJANGO_DEBUG=1` for local demos (runserver serves the static files). If preflight says token escrow is disabled,
-set `XRPL_NETWORK=devnet` and rerun `bootstrap_demo`. Demo keys live in `db.sqlite3` (git-ignored); they are Testnet
+Keep `DJANGO_DEBUG=1` for local use (runserver serves the static files). If preflight says token escrow is disabled, set
+`XRPL_NETWORK=devnet` and rerun `bootstrap`. Platform wallet seeds live in `db.sqlite3` (git-ignored); they are Testnet
 keys with no value, and the app refuses to start against mainnet.
 
-Checks (shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead of `.venv/bin/python`):
+## Test funds
+
+The dashboard has a test funds card: activate the account (test XRP from the platform treasury), add the trust line
+for the test token (a Xaman signature) and receive 5,000 test tokens. Each step is allowed once per account per day.
+
+## Checks
+
+Shown for macOS / Linux; on Windows use `.venv\Scripts\python` instead of `.venv/bin/python`:
 
 ```bash
-.venv/bin/python manage.py test                       # 90 tests, no network
+.venv/bin/python manage.py test                       # no network
 .venv/bin/python manage.py smoke_test --scenario all  # ledger mechanics on Testnet
-.venv/bin/python scripts/api_walkthrough.py           # A, B, C through the JSON API (demo mode)
-.venv/bin/python scripts/wallet_walkthrough.py        # the browser-wallet paths, with a throw-away wallet
+.venv/bin/python manage.py preflight                  # token escrow works, with throw-away wallets
 ```
 
-## The live demo (under 3 minutes)
+A manual multisign check with real Xaman accounts is planned (see `docs/superpowers/plans`).
 
-1. `demo_scenarios`, then open `/demo/stage/` on the projector. Keep `run_bot` running.
-2. **C**: click *Arbiter approves*. 850 / 150 is paid out by two signatures.
-3. **B**: click *Tenant moves out*, then *Landlord approves the refund*.
-4. **A**: watch the countdown reach zero. About 10 s later the bot returns the deposit. If the bot isn't running, the
-   column offers *Run bot now* once 20 s have passed.
-5. Open *Public check* on any column: the browser verifies the deposit on the ledger itself.
+## Manual test
 
-## Manual test script
+With `runserver` and `run_bot` running, use two browsers (or one plus a private window) with two Xaman accounts, A and
+B, plus a third account C for the arbiter:
 
-With `runserver` and `run_bot` running:
-
-1. `/demo/`: three persona cards with balances and the arbiter's *Verified arbiter* badge. *Act as Giulia*.
-2. **A, normal end.** *New deposit*: amount 1000, ends in 2 minutes, grace 1, tick the terms, *Create settlement
-   account*. Four checklist steps tick, each with an explorer link. *Sign & lock deposit*. The lease page shows the
-   countdown; shortly after it reaches zero a toast says the deposit was returned and the page shows the success state.
-3. **B, early move-out.** Create and lock another deposit (ends in 20 minutes). *I'm moving out early*. A proposal of
-   100% to the tenant appears with 1 of 2 approvals. Switch to Marco in the demo bar, *Approve this split*. Status:
-   Settled, with the payout link.
-4. **C, damage dispute.** Create and lock a third deposit. As Giulia, upload a photo under *Evidence*; it appears with
-   *Anchored on XRPL*. *Verify* says Match; *Verify an altered copy* says Mismatch. Switch to Marco, *Claim damage*, set
-   150 to the landlord, give a reason, submit. Switch to Bari, open *Arbiter*, *Approve this split*. Status: Settled,
-   850 / 150.
-5. On any lease: *Inspect ledger data* shows the settlement account's raw ledger state; *Share verification link*
-   copies `/verify/<id>/`, which works in a private window.
-6. Every step is in the *Ledger timeline* with a working explorer link, and the browser console stays clean.
-
-## Browser wallets (GemWallet)
-
-Demo mode (server-held Testnet keys, persona switcher) is the default and always works. A tenant or landlord can also
-use GemWallet on Testnet:
-
-- *Connect wallet* proves ownership with one signed challenge (`GET /api/wallet/challenge/`, then
-  `POST /api/wallet/link/`). The server checks the signature and that the public key derives the address.
-- Lock and release: the server builds the unsigned transaction, the wallet signs and submits it, and the server accepts
-  it only after checking the validated transaction on the ledger (right escrow, amount, condition, sender).
-- Before locking, the page checks the wallet's trust line and balance and offers a one-click TrustSet and a test top-up.
-- **Multisign finding:** `@gemwallet/api` 3.8.0 exposes `signTransaction({transaction})` and `submitTransaction`, with
-  no multisign option, so a wallet can't produce a signature for the 2-of-3 payout. Approvals therefore stay on the
-  server with demo keys (the button says *Approve (demo key)*). A wallet party can propose a split; the other two
-  parties approve it.
-- `@gemwallet/api` is fetched by `scripts/fetch_vendor.py`, not committed: its licence allows personal and educational
-  use but asks for GemWallet's permission before public or commercial distribution. Ask them before a public launch.
-
-The GemWallet flow was verified against the server with `scripts/wallet_walkthrough.py` (same endpoints, signatures made
-by xrpl-py). It has not been clicked through with the real extension yet.
+1. Sign in as A, set a name, and use the dashboard test funds card (activate, trust line, tokens). Do the same for B.
+2. **A, normal end.** As A (tenant) create an agreement ending in 2 minutes, grace 1. Open the landlord link as B and
+   accept; open the arbiter link as C and accept; A and B approve the arbiter. The setup steps tick. A locks the
+   deposit in Xaman. Shortly after the countdown ends the bot returns it.
+3. **B, early move-out.** Repeat with a later end date. After locking, A chooses early move-out. A proposal of 100% to
+   the tenant appears with approvals pending; A and B approve in Xaman. Status: Settled, with payout links.
+4. **C, damage dispute.** Repeat once more. A uploads a photo under Evidence (anchored with a Xaman signature). B
+   claims damage and proposes 850 / 150. B and C approve. Status: Settled.
+5. On any agreement the share verification link (`/verify/<id>/`) works in a private window. Every step is in the
+   ledger timeline with an explorer link.
 
 ## Security and privacy
 
 - Strict CSP on every page (`default-src 'self'`, no inline scripts or styles, WebSocket only to the configured test
   network). No third-party requests at run time, so no visitor IP reaches a CDN.
-- CSRF on every POST; session id rotated on wallet sign-in; one-time, expiring challenges.
+- CSRF on every POST; session id rotated on sign-in; sign-in is a Xaman SignIn payload checked server side.
 - The escrow's release secret leaves the server only in `GET /api/leases/<id>/release-tx/`, for that lease's tenant or
-  landlord. Seeds never leave it and are hidden in the admin.
+  landlord. Only platform wallet seeds (and Testnet settlement seeds, whose master key is disabled) are stored; they never leave
+  the server and are hidden in the admin.
 - Evidence photos are served only to the lease's three parties through an access-checked view (`nosniff`, sandboxed).
   File type is checked by signature, size capped at 5 MB, names replaced. Only the SHA-256 goes on the ledger.
 - Memos are public and permanent: ids and hashes only, never names.
@@ -178,13 +180,13 @@ by xrpl-py). It has not been clicked through with the real extension yet.
 
 ## Known limitations
 
-- Demo keys are held on the server (Testnet only). Production would use wallets for every signature.
-- A coordinating backend builds transactions and stores the release secret; the ledger still enforces every rule.
-- Wallets can't multisign, so payout approvals use demo keys.
+- No email notifications: invite links are shared by hand.
+- Xaman is needed on a phone; there is no other wallet.
+- The platform's coordinating backend builds the transactions and stores the release secret; the ledger still enforces
+  every rule.
 - Production would use a regulated euro stablecoin whose issuer enables escrow, and a real arbiter registry.
 - Photo EXIF data is not stripped (photos are private to the parties, but should be cleaned before any wider use).
-- No rate limiting or user accounts beyond the demo session and wallet sign-in.
-- `demo_scenarios` took about 3 min 20 s on a slow connection; on a good one it is well under 3 minutes.
+- Testnet only.
 
 ## Branding rules (XRP Brand Toolkit 2026)
 
@@ -195,5 +197,4 @@ by xrpl-py). It has not been clicked through with the real extension yet.
   text; green *text* uses Dark Green `#078139` for contrast).
 - The footer states the project isn't affiliated with Ripple or the XRP Ledger Foundation. Keep that line.
 - Whitepaper building blocks: `.sec` + `.sec__title`, `.defn` / `.defn--theorem`, `.equation` + `.math`, `.stats`,
-  `.titleblock`, `.abstract`. App components (toasts, demo bar, checklist, countdown, split bar, gallery, dialog,
-  stage) are section 10 of `global.css`.
+  `.titleblock`, `.abstract`. App components (toasts, checklist, countdown, split bar, gallery, dialog) are section 10 of `global.css`.

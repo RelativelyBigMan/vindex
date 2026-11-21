@@ -1,14 +1,14 @@
 #!/usr/bin/env python
 """One-step setup that works the same on Windows 11, macOS and Linux.
 
-    Windows:        py scripts\\setup.py            (add --demo to create the Testnet demo wallets too)
+    Windows:        py scripts\\setup.py            (add --bootstrap to create the platform wallets too)
     macOS / Linux:  python3 scripts/setup.py
 
 It only uses the standard library, so it runs before anything is installed. Safe to rerun:
 an existing .venv is reused and an existing .env is never overwritten.
 
 Steps: virtual environment -> pip install -> .env with a fresh secret key -> browser libraries
-(scripts/fetch_vendor.py) -> database migrations -> optionally bootstrap_demo and preflight.
+(scripts/fetch_vendor.py) -> database migrations -> optionally bootstrap and preflight.
 """
 import argparse
 import os
@@ -54,8 +54,8 @@ def make_env_file():
 
 def main():
     parser = argparse.ArgumentParser(description="Set up safeDeposit for local development.")
-    parser.add_argument("--demo", action="store_true",
-                        help="Also create the demo wallets on the XRPL test network and run preflight (needs internet, about 2 minutes).")
+    parser.add_argument("--bootstrap", action="store_true",
+                        help="Also create the platform wallets on the XRPL test network and run preflight (needs internet, about 2 minutes).")
     args = parser.parse_args()
 
     if sys.version_info < MIN_PYTHON:
@@ -74,6 +74,10 @@ def main():
 
     say("Configuration (.env)")
     make_env_file()
+    env = (ROOT / ".env").read_text(encoding="utf-8")
+    if "XAMAN_API_KEY=
+" in env or "XAMAN_API_KEY=" not in env:
+        print("NOTE: set XAMAN_API_KEY and XAMAN_API_SECRET in .env (free at https://apps.xumm.dev), or nobody can sign in.")
 
     say("Browser libraries (static/vendor)")
     run("scripts/fetch_vendor.py")
@@ -81,19 +85,18 @@ def main():
     say("Database")
     run("manage.py", "migrate")
 
-    if args.demo:
-        say("Demo wallets, test tokens and the arbiter credential on the XRPL test network")
-        run("manage.py", "bootstrap_demo")
+    if args.bootstrap:
+        say("Platform wallets and test tokens on the XRPL test network")
+        run("manage.py", "bootstrap")
         say("Preflight: does token escrow work on this network?")
         run("manage.py", "preflight")
 
     python = os.path.relpath(VENV_PYTHON, ROOT)  # .venv\Scripts\python.exe on Windows, .venv/bin/python elsewhere
     say("Done. Next, each in its own terminal, from the project folder:")
-    if not args.demo:
-        print(f"  {python} manage.py bootstrap_demo     (once: demo wallets on the test network)")
+    if not args.bootstrap:
+        print(f"  {python} manage.py bootstrap          (once: platform wallets on the test network)")
     print(f"  {python} manage.py runserver          (then open http://127.0.0.1:8000)")
     print(f"  {python} manage.py run_bot            (returns deposits after their return date)")
-    print(f"  {python} manage.py demo_scenarios     (stages the three demo leases)")
 
 
 if __name__ == "__main__":

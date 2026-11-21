@@ -11,7 +11,7 @@ log = logging.getLogger("core.bot")
 
 
 class Command(BaseCommand):
-    help = "Loop bot_pass() every 10 seconds (Ctrl+C to stop). The same pass runs from POST /api/demo/run-bot/."
+    help = "Loop bot_pass() every 10 seconds (Ctrl+C to stop): returns deposits after their return date and closes expired agreements."
 
     def add_arguments(self, parser):
         parser.add_argument("--interval", type=int, default=10, help="Seconds between passes.")
