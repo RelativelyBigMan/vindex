@@ -1,8 +1,7 @@
 import hashlib
-
-from django.core.exceptions import ImproperlyConfigured
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 from xrpl.core import binarycodec
 from xrpl.wallet import Wallet
@@ -74,11 +73,7 @@ class ErrorTests(SimpleTestCase):
 # ---- Patch 2: payout validation, deadline guards, signature checks (no network) ----
 from datetime import datetime, timedelta, timezone  # noqa: E402
 from decimal import Decimal  # noqa: E402
-from unittest import mock  # noqa: E402
 
-from xrpl.wallet import Wallet  # noqa: E402
-
-from . import services  # noqa: E402
 from .errors import ExpiredPreparedTx  # noqa: E402
 
 NOW = datetime(2026, 11, 20, 21, 0, 0, tzinfo=timezone.utc)
@@ -281,7 +276,6 @@ class MemoTests(SimpleTestCase):
             services._memo("safedeposit/evidence", {"x": "y" * 2000})
 
 
-
 def response(status=200, data=None):
     fake = mock.Mock(status_code=status)
     fake.json.return_value = data if data is not None else {}
@@ -325,6 +319,7 @@ class XamanClientTests(SimpleTestCase):
             ({"meta": {"resolved": True, "signed": False, "cancelled": False, "expired": False}}, "rejected"),
             ({"meta": {"resolved": False, "signed": False, "cancelled": True}}, "rejected"),
             ({"meta": {"resolved": False, "signed": False, "cancelled": False, "expired": True}}, "expired"),
+            ({"meta": {"resolved": True, "signed": False, "cancelled": False, "expired": True}}, "expired"),
         ]
         for data, status in cases:
             with self.subTest(status=status), mock.patch.object(xaman.requests, "get", return_value=response(200, data)):
@@ -383,5 +378,6 @@ class MultisigBlobTests(SimpleTestCase):
     def test_a_forged_signature_is_refused(self):
         signed = services.sign_prepared(self.tx, self.signer)
         signed["Signers"][0]["Signer"]["TxnSignature"] = "30" + signed["Signers"][0]["Signer"]["TxnSignature"][2:-2] + "00"
-        with self.assertRaises(LedgerError):
+        with self.assertRaises(LedgerError) as caught:
             services.verify_multisig_blob(self.tx, binarycodec.encode(signed), self.signer.address)
+        self.assertEqual(caught.exception.engine_result, "signature_mismatch")

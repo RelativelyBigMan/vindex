@@ -45,9 +45,12 @@ def _call(method, path, **kwargs):
         log.warning("xaman %s %s answered %s: %s", method.upper(), path, answer.status_code, str(getattr(answer, "text", ""))[:300])
         raise LedgerError("xaman_error", "Xaman refused the request. Check the API key and secret, then try again.")
     try:
-        return answer.json()
+        data = answer.json()
     except ValueError as exc:
         raise LedgerError("xaman_error", "Xaman sent an answer we couldn't read.") from exc
+    if not isinstance(data, dict):
+        raise LedgerError("xaman_error", "Xaman sent an answer we couldn't read.")
+    return data
 
 
 def create_payload(txjson, *, submit, multisign=False, signers=None, instruction="", user_token=""):
@@ -63,6 +66,8 @@ def create_payload(txjson, *, submit, multisign=False, signers=None, instruction
     if user_token:
         body["user_token"] = user_token
     data = _call("post", "/payload", json=body)
+    if "uuid" not in data:
+        raise LedgerError("xaman_error", "Xaman sent an answer we couldn't read.")
     return {"uuid": data["uuid"], "deeplink": (data.get("next") or {}).get("always", ""), "pushed": bool(data.get("pushed"))}
 
 
@@ -73,10 +78,10 @@ def get_payload(uuid):
     reply = data.get("response") or {}
     if meta.get("signed"):
         status = "signed"
-    elif meta.get("cancelled") or meta.get("resolved"):
-        status = "rejected"
     elif meta.get("expired"):
         status = "expired"
+    elif meta.get("cancelled") or meta.get("resolved"):
+        status = "rejected"
     else:
         status = "open"
     return {
