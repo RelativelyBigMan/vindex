@@ -22,8 +22,10 @@ ALLOWED_HOSTS = [h for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,12
 
 # testnet | devnet. Validated (and mainnet refused) in ledger/client.py.
 XRPL_NETWORK = os.environ.get("XRPL_NETWORK", "testnet").strip().lower()
-# Demo mode: the server holds Testnet keys for the demo personas.
-DEMO_MODE = env_bool("DEMO_MODE", "1")
+# Xaman (https://apps.xumm.dev): the server creates sign requests with these. Never sent to the browser.
+XAMAN_API_KEY = os.environ.get("XAMAN_API_KEY", "").strip()
+XAMAN_API_SECRET = os.environ.get("XAMAN_API_SECRET", "").strip()
+DEMO_MODE = False  # removed in Task 3; kept so existing modules import
 
 INSTALLED_APPS = [
     "django.contrib.admin",

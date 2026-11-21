@@ -1,9 +1,13 @@
 import hashlib
 
 from django.core.exceptions import ImproperlyConfigured
-from django.test import SimpleTestCase, override_settings
+from unittest import mock
 
-from . import client
+from django.test import SimpleTestCase, override_settings
+from xrpl.core import binarycodec
+from xrpl.wallet import Wallet
+
+from . import client, services, xaman
 from .conditions import encode_preimage, make_condition
 from .errors import LedgerError
 
@@ -275,3 +279,109 @@ class MemoTests(SimpleTestCase):
         self.assertIsNone(services.read_memo({}, "safedeposit/evidence"))
         with self.assertRaises(LedgerError):
             services._memo("safedeposit/evidence", {"x": "y" * 2000})
+
+
+
+def response(status=200, data=None):
+    fake = mock.Mock(status_code=status)
+    fake.json.return_value = data if data is not None else {}
+    return fake
+
+
+@override_settings(XAMAN_API_KEY="key", XAMAN_API_SECRET="secret", XRPL_NETWORK="testnet")
+class XamanClientTests(SimpleTestCase):
+    def test_create_payload_sends_network_options_and_credentials(self):
+        with mock.patch.object(xaman.requests, "post", return_value=response(200, {
+            "uuid": "u-1", "next": {"always": "https://xumm.app/sign/u-1"}, "pushed": True,
+        })) as post:
+            result = xaman.create_payload({"TransactionType": "SignIn"}, submit=False, instruction="Sign in", user_token="tok")
+        self.assertEqual(result, {"uuid": "u-1", "deeplink": "https://xumm.app/sign/u-1", "pushed": True})
+        url, kwargs = post.call_args.args[0], post.call_args.kwargs
+        self.assertEqual(url, "https://xumm.app/api/v1/platform/payload")
+        self.assertEqual(kwargs["headers"]["X-API-Key"], "key")
+        self.assertEqual(kwargs["headers"]["X-API-Secret"], "secret")
+        body = kwargs["json"]
+        self.assertEqual(body["options"], {"submit": False, "expire": 5, "force_network": "TESTNET"})
+        self.assertEqual(body["custom_meta"], {"instruction": "Sign in"})
+        self.assertEqual(body["user_token"], "tok")
+
+    def test_multisign_payload_lists_the_allowed_signer(self):
+        with mock.patch.object(xaman.requests, "post", return_value=response(200, {"uuid": "u", "next": {"always": "x"}})) as post:
+            xaman.create_payload({"TransactionType": "Payment"}, submit=False, multisign=True, signers=["rA"])
+        options = post.call_args.kwargs["json"]["options"]
+        self.assertEqual((options["multisign"], options["signers"]), (True, ["rA"]))
+
+    @override_settings(XRPL_NETWORK="devnet")
+    def test_devnet_forces_the_devnet(self):
+        with mock.patch.object(xaman.requests, "post", return_value=response(200, {"uuid": "u", "next": {"always": "x"}})) as post:
+            xaman.create_payload({"TransactionType": "SignIn"}, submit=False)
+        self.assertEqual(post.call_args.kwargs["json"]["options"]["force_network"], "DEVNET")
+
+    def test_get_payload_normalises_every_state(self):
+        cases = [
+            ({"meta": {"resolved": False, "signed": False, "cancelled": False, "expired": False}}, "open"),
+            ({"meta": {"resolved": True, "signed": True}, "response": {"account": "rA", "hex": "AB", "txid": "T"},
+              "application": {"issued_user_token": "tok"}}, "signed"),
+            ({"meta": {"resolved": True, "signed": False, "cancelled": False, "expired": False}}, "rejected"),
+            ({"meta": {"resolved": False, "signed": False, "cancelled": True}}, "rejected"),
+            ({"meta": {"resolved": False, "signed": False, "cancelled": False, "expired": True}}, "expired"),
+        ]
+        for data, status in cases:
+            with self.subTest(status=status), mock.patch.object(xaman.requests, "get", return_value=response(200, data)):
+                self.assertEqual(xaman.get_payload("u")["status"], status)
+        with mock.patch.object(xaman.requests, "get", return_value=response(200, cases[1][0])):
+            self.assertEqual(xaman.get_payload("u"), {"status": "signed", "account": "rA", "hex": "AB", "txid": "T", "user_token": "tok"})
+
+    def test_http_errors_become_friendly_ledger_errors(self):
+        with mock.patch.object(xaman.requests, "post", return_value=response(403, {"error": {"reference": "x"}})):
+            with self.assertRaises(LedgerError) as caught:
+                xaman.create_payload({"TransactionType": "SignIn"}, submit=False)
+        self.assertEqual(caught.exception.engine_result, "xaman_error")
+        with mock.patch.object(xaman.requests, "get", side_effect=xaman.requests.ConnectionError("down")):
+            with self.assertRaises(LedgerError):
+                xaman.get_payload("u")
+
+    @override_settings(XAMAN_API_KEY="", XAMAN_API_SECRET="")
+    def test_missing_keys_are_reported(self):
+        self.assertFalse(xaman.configured())
+        with self.assertRaises(LedgerError) as caught:
+            xaman.create_payload({"TransactionType": "SignIn"}, submit=False)
+        self.assertEqual(caught.exception.engine_result, "xaman_not_configured")
+
+    def test_qr_is_an_svg_data_uri(self):
+        self.assertTrue(xaman.qr_data_uri("https://xumm.app/sign/u").startswith("data:image/svg+xml"))
+
+
+class MultisigBlobTests(SimpleTestCase):
+    def setUp(self):
+        self.signer = Wallet.create()
+        self.other = Wallet.create()
+        self.tx = {
+            "TransactionType": "Payment", "Account": Wallet.create().address, "Destination": self.other.address,
+            "Amount": {"currency": "EUR", "issuer": Wallet.create().address, "value": "150"},
+            "Sequence": 10, "Fee": "36", "LastLedgerSequence": 5000, "SigningPubKey": "",
+        }
+
+    def blob(self, tx, wallet):
+        return binarycodec.encode(services.sign_prepared(tx, wallet))
+
+    def test_a_valid_signature_from_the_expected_signer_is_returned_as_json(self):
+        signed = services.verify_multisig_blob(self.tx, self.blob(self.tx, self.signer), self.signer.address)
+        self.assertEqual(signed["Signers"][0]["Signer"]["Account"], self.signer.address)
+
+    def test_wrong_signer_other_transaction_or_garbage_is_refused(self):
+        tampered = {**self.tx, "Amount": {**self.tx["Amount"], "value": "999"}}
+        for blob, address in (
+            (self.blob(self.tx, self.other), self.signer.address),
+            (self.blob(tampered, self.signer), self.signer.address),
+            ("ZZ", self.signer.address),
+        ):
+            with self.subTest(address=address), self.assertRaises(LedgerError) as caught:
+                services.verify_multisig_blob(self.tx, blob, address)
+            self.assertEqual(caught.exception.engine_result, "signature_mismatch")
+
+    def test_a_forged_signature_is_refused(self):
+        signed = services.sign_prepared(self.tx, self.signer)
+        signed["Signers"][0]["Signer"]["TxnSignature"] = "30" + signed["Signers"][0]["Signer"]["TxnSignature"][2:-2] + "00"
+        with self.assertRaises(LedgerError):
+            services.verify_multisig_blob(self.tx, binarycodec.encode(signed), self.signer.address)

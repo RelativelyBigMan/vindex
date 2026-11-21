@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
 from decimal import Decimal, InvalidOperation
 
+from xrpl.core import binarycodec, keypairs
 from xrpl.models.amounts import IssuedCurrencyAmount
 from xrpl.models.requests import AccountInfo, AccountLines, AccountObjects, AccountObjectType, Ledger, LedgerEntry, Tx
 from xrpl.models.requests.ledger_entry import Escrow as EscrowLocator
@@ -679,6 +680,44 @@ def execute_multisigned(tx_dict, signed_jsons, enforce_quorum=True):
             raise
         except Exception as exc:
             raise LedgerError.from_exception(exc) from exc
+
+
+def verify_multisig_blob(tx_dict, blob_hex, signer_address):
+    """Check a wallet's multisignature (a signed tx blob) over exactly `tx_dict`. -> signed XRPL JSON
+
+    The blob must carry exactly one Signer: `signer_address`, using its own key, with a valid
+    signature over this transaction. Raises LedgerError('signature_mismatch') otherwise.
+    """
+    def refuse(message):
+        return LedgerError("signature_mismatch", message)
+
+    try:
+        signed = binarycodec.decode(str(blob_hex))
+    except Exception as exc:
+        raise refuse("The wallet returned something that isn't a signed transaction.") from exc
+    signers = signed.get("Signers") or []
+    if len(signers) != 1:
+        raise refuse("Expected exactly one signature from the wallet.")
+    signer = signers[0].get("Signer") or {}
+    if signer.get("Account") != signer_address:
+        raise refuse("The approval was signed by a different account.")
+    body = _without_signatures(tx_dict)
+    try:
+        same = _without_signatures(signed) == body
+    except Exception:
+        same = False
+    if not same:
+        raise refuse("The wallet signed a different transaction than the one prepared.")
+    public_key = signer.get("SigningPubKey") or ""
+    try:
+        own_key = keypairs.derive_classic_address(public_key) == signer_address
+        message = bytes.fromhex(binarycodec.encode_for_multisigning(body, signer_address))
+        valid = own_key and keypairs.is_valid_message(message, bytes.fromhex(signer.get("TxnSignature") or ""), public_key)
+    except Exception:
+        valid = False
+    if not valid:
+        raise refuse("The approval's signature isn't valid for this account's own key.")
+    return signed
 
 
 # ---- memo anchoring (used for evidence in Patch 6) ----
