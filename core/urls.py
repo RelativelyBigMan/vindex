@@ -25,7 +25,6 @@ api_patterns = [
     path("api/faucet/", api.faucet_status),
     path("api/faucet/activate/", api.faucet_activate),
     path("api/faucet/trustline/", api.faucet_trustline),
-    path("api/faucet/tokens/", api.faucet_tokens),
     path("api/invites/<str:token>/", api.invite),
     path("api/invites/<str:token>/accept/", api.invite_accept),
     path("api/invites/<str:token>/decline/", api.invite_decline),

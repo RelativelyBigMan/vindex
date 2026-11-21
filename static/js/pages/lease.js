@@ -215,7 +215,7 @@ function lockStep(s) {
     return box;
   }
   if (funds && Number(funds.balances[s.currency] || 0) < Number(s.amount)) {
-    box.append(el("p", { class: "alert alert--warning" }, `You hold ${money(funds.balances[s.currency] || 0, s.currency)}; the deposit is ${money(s.amount, s.currency)}. Get test tokens on `, el("a", { href: "/leases/", text: "your dashboard" }), "."));
+    box.append(el("p", { class: "alert alert--warning" }, `You hold ${money(funds.balances[s.currency] || 0, s.currency)}; the deposit is ${money(s.amount, s.currency)}. Ask the Vindex team for test tokens.`));
     return box;
   }
   box.append(el("div", { class: "actions" }, el("button", {
@@ -295,8 +295,15 @@ function renderActions(s, me) {
   if (acting) return;
   card.hidden = relevant.length === 0;
   if (card.hidden) return;
-  renderIfChanged($("[data-actions]"), [relevant, s.status, s.settlement?.balance, me?.party_id, openForm], (node) => {
+  renderIfChanged($("[data-actions]"), [relevant, s.status, s.settlement?.balance, me?.party_id, openForm, faucetState], (node) => {
     const buttons = [];
+    // A payout can only reach an account with a trust line for the token: offer it before a split is agreed.
+    const canReceive = !faucetState || Boolean(faucetState.trust_lines[s.currency]);
+    const needsLine = ["tenant", "landlord"].includes(s.role) && ["ACTIVE", "IN_SETTLEMENT"].includes(s.status) && !canReceive;
+    const lineWarning = needsLine && el("div", { class: "alert alert--warning stack" },
+      el("p", { text: `Your account can't receive ${s.currency_label} yet, so no split can pay you. Add the trust line first.` }),
+      el("div", {}, el("button", { type: "button", class: "btn", text: `Add ${s.currency} trust line in Xaman`,
+        on: { click: (event) => walletStep(event.currentTarget, () => addTrustLine(s.currency)) } })));
     if (relevant.includes("release_early")) {
       buttons.push(el("button", {
         type: "button", class: "btn btn--tint-tenant",
@@ -323,12 +330,18 @@ function renderActions(s, me) {
         total: s.amount, code: s.currency, submitLabel: "Claim damage and propose this split", tenant: s.amount,
         intro: "Claiming moves the deposit out of the escrow into the 2-of-3 settlement account, then proposes your split. You can't take anything alone: the tenant or the arbiter must approve.",
         onCancel: () => toggleForm(null),
-        onSubmit: (values, button) => act(button, "Releasing and preparing the split…", async () => {
+        onSubmit: (values, button) => {
+          if (Number(values.landlord) > 0 && !canReceive) {
+            toast(`Add the ${s.currency} trust line first, or the landlord's share can't be paid.`, "warning");
+            return undefined;
+          }
+          return act(button, "Releasing and preparing the split…", async () => {
           await releaseDeposit(leaseId, "damage_claim");
           openForm = null;
           const { proposal_id: proposalId } = await proposeSplit(leaseId, values.tenant, values.landlord, values.reason);
           return approveSplit(proposalId);
-        }),
+          });
+        },
       });
     } else if (openForm === "propose" && relevant.includes("propose") && s.settlement?.balance) {
       form = splitForm({
@@ -342,7 +355,7 @@ function renderActions(s, me) {
         }),
       });
     }
-    fill(node, el("div", { class: "actions" }, buttons), form && el("div", { class: "mt-8" }, form));
+    fill(node, lineWarning, el("div", { class: "actions" }, buttons), form && el("div", { class: "mt-8" }, form));
   });
 }
 

@@ -394,13 +394,6 @@ def faucet_trustline(request):
     return signing.present(signing.start_trustline(party, _currency(_body(request))))
 
 
-@api("POST")
-def faucet_tokens(request):
-    party = current_party(request)
-    tx_hash = faucet.grant_tokens(party, _currency(_body(request)))
-    return {"tx_hash": tx_hash, "explorer_url": explorer_tx(tx_hash)}
-
-
 # ---- leases and agreements ----
 
 def _parse_end(data):

@@ -88,14 +88,10 @@ async function renderFaucet() {
     steps.push(el("p", {}, "Balances: ", Object.entries(data.balances).map(([code, value]) => money(value, code)).join(" · ") || "none"));
     for (const currency of config.currencies) {
       const hasLine = data.trust_lines[currency.code];
-      const canGet = data.available[`tokens:${currency.code}`];
       steps.push(el("div", { class: "actions" },
         hasLine
           ? el("span", { class: "badge badge--success", text: `${currency.code} trust line set` })
-          : el("button", { type: "button", class: "btn", on: { click: (e) => faucetStep(e.currentTarget, "Confirm in Xaman…", () => addTrustLine(currency.code), `Your account can now hold ${currency.label}.`) } }, `Add ${currency.code} trust line`),
-        hasLine && el("button", { type: "button", class: "btn btn--primary", disabled: !canGet,
-          on: { click: (e) => faucetStep(e.currentTarget, "Sending test tokens…", () => post("/api/faucet/tokens/", { currency: currency.code }), `5,000 ${currency.label} sent.`) } },
-        canGet ? `Get 5,000 ${currency.label}` : `${currency.code} received in the last 24 hours`)));
+          : el("button", { type: "button", class: "btn", on: { click: (e) => faucetStep(e.currentTarget, "Confirm in Xaman…", () => addTrustLine(currency.code), `Your account can now hold ${currency.label}.`) } }, `Add ${currency.code} trust line`)));
     }
   }
   fill(body, ...steps);

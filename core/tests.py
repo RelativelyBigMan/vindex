@@ -1,4 +1,5 @@
 """Lifecycle and API tests. Every ledger call is mocked: nothing here touches the network."""
+import io
 import json
 from datetime import timedelta
 from decimal import Decimal
@@ -322,6 +323,29 @@ class ProposalTests(LedgerMockedTestCase):
         for index in range(len(proposal.prepared_txs)):
             proposal = lifecycle.add_signature(proposal, party, index, f"BLOB{index}")
         return proposal
+
+    def test_a_split_paying_someone_without_a_trust_line_is_refused(self):
+        # The landlord never added the EUR trust line: their share could never be paid.
+        self.ledger.has_trust_line.side_effect = lambda address, code, issuer: address != self.landlord.address
+        with self.assertRaises(InvalidInput) as caught:
+            lifecycle.propose(self.lease, self.landlord, "500", "500")
+        self.assertEqual(caught.exception.code, "no_trust_line")
+        self.assertIn("landlord", caught.exception.message)
+        self.ledger.prepare_payout_txs.assert_not_called()
+        # Nothing goes to the landlord: no trust line needed.
+        self.assertEqual(lifecycle.propose(self.lease, self.tenant, "1000", "0").status, "OPEN")
+
+    def test_a_failed_payout_is_recorded_and_can_be_retried(self):
+        proposal = self.approve(lifecycle.propose(self.lease, self.landlord, "500", "500"), self.landlord)
+        self.ledger.execute_multisigned.side_effect = ["PAY1", LedgerError("tecNO_LINE")]
+        with self.assertRaises(LedgerError):
+            self.approve(proposal, self.arbiter)
+        failed = self.lease.events.get(kind="payout_failed")
+        self.assertIn("landlord", failed.summary)
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.executed_hashes, ["PAY1"])
+        self.ledger.execute_multisigned.side_effect = ["PAY2"]
+        self.assertEqual(lifecycle.retry_payout(proposal, self.landlord).status, "EXECUTED")
 
     def test_propose_only_in_settlement_and_only_by_a_signer(self):
         with self.assertRaises(InvalidTransition):
@@ -827,26 +851,20 @@ class FaucetTests(LedgerMockedTestCase):
         with self.assertRaises(InvalidTransition):
             faucet.activate(self.landlord)
 
-    def test_tokens_need_a_trust_line_and_are_limited_per_currency(self):
-        from . import faucet
+    def test_admin_command_issues_test_tokens_only_with_a_trust_line(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
         self.ledger.has_trust_line.return_value = False
-        with self.assertRaises(InvalidTransition) as caught:
-            faucet.grant_tokens(self.tenant, self.eur)
-        self.assertEqual(caught.exception.code, "no_trust_line")
+        with self.assertRaises(CommandError):
+            call_command("issue_test_tokens", self.tenant.address, "EUR", stdout=io.StringIO())
         self.ledger.has_trust_line.return_value = True
         self.ledger.issue_tokens.return_value = "TOKHASH"
-        self.assertEqual(faucet.grant_tokens(self.tenant, self.eur), "TOKHASH")
-        self.assertEqual(self.ledger.issue_tokens.call_args.args[1:], (self.tenant.address, "EUR", faucet.TOKEN_GRANT))
-        with self.assertRaises(InvalidTransition):
-            faucet.grant_tokens(self.tenant, self.eur)
-
-    def test_a_failed_grant_does_not_use_up_the_day(self):
-        from . import faucet
-        self.ledger.has_trust_line.return_value = True
-        self.ledger.issue_tokens.side_effect = [LedgerError("network_error", "offline"), "TOKHASH"]
-        with self.assertRaises(LedgerError):
-            faucet.grant_tokens(self.tenant, self.eur)
-        self.assertEqual(faucet.grant_tokens(self.tenant, self.eur), "TOKHASH")
+        out = io.StringIO()
+        call_command("issue_test_tokens", self.tenant.address, "eur", "2500", stdout=out)
+        self.assertEqual(self.ledger.issue_tokens.call_args.args[1:], (self.tenant.address, "EUR", Decimal("2500")))
+        self.assertIn("TOKHASH", out.getvalue())
+        with self.assertRaises(CommandError):
+            call_command("issue_test_tokens", self.tenant.address, "GBP", stdout=io.StringIO())
 
     def test_status_reports_what_is_still_possible(self):
         from . import faucet
@@ -856,7 +874,7 @@ class FaucetTests(LedgerMockedTestCase):
         data = faucet.status(self.tenant)
         self.assertEqual(data["activated"], True)
         self.assertEqual(data["trust_lines"], {"EUR": True})
-        self.assertEqual(data["available"], {"activate": False, "tokens:EUR": True})
+        self.assertEqual(data["available"], {"activate": False})
 
 
 class ApiTests(LedgerMockedTestCase):
@@ -1002,7 +1020,7 @@ class ApiTests(LedgerMockedTestCase):
         self.ledger.fund_xrp.return_value = "FUNDHASH"
         self.assertEqual(self.post("/api/faucet/activate/").json()["tx_hash"], "FUNDHASH")
         self.assertEqual(self.post("/api/faucet/trustline/", {"currency": "EUR"}).json()["purpose"], "trustset")
-        self.assertEqual(self.post("/api/faucet/tokens/", {"currency": "XXX"}).json()["code"], "bad_currency")
+        self.assertEqual(self.post("/api/faucet/tokens/", {"currency": "EUR"}).status_code, 404)  # removed: admins issue tokens
 
     def test_pages_render_with_a_strict_csp(self):
         lease = self.make_lease(S.ACTIVE)

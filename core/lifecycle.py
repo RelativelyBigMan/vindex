@@ -375,6 +375,15 @@ def _propose(lease, party, tenant_amount, landlord_amount, reason):
             f"The two amounts must add up to exactly {money(lease, balance)}, the amount held in the settlement account.",
             "payout_sum_mismatch",
         )
+    # An account can only receive the token through a trust line. Without one, that payout would be
+    # rejected on the ledger (tecNO_LINE) after the other share was already paid.
+    for role, recipient, amount in (("tenant", lease.tenant, tenant_amount), ("landlord", lease.landlord, landlord_amount)):
+        if amount > 0 and not services.has_trust_line(recipient.address, code, issuer):
+            raise InvalidInput(
+                f"{recipient.label} ({role}) can't receive {code} yet: they need to add the {code} trust line first "
+                "(My deposits → Test funds). Then propose the split again.",
+                "no_trust_line",
+            )
     prepared = services.prepare_payout_txs(lease.settlement_address, _payouts(lease, tenant_amount, landlord_amount), code, issuer)
     for old in open_proposals:
         old.status = SettlementProposal.Status.SUPERSEDED
@@ -481,11 +490,18 @@ def _submit_remaining(proposal, lease):
     for index in range(len(proposal.executed_hashes), len(proposal.prepared_txs)):
         tx = proposal.prepared_txs[index]
         signed = [proposal.signatures[key][index] for key in signers]
-        tx_hash = services.execute_multisigned(tx, signed)
+        to = names.get(tx.get("Destination"), tx.get("Destination"))
+        try:
+            tx_hash = services.execute_multisigned(tx, signed)
+        except ExpiredPreparedTx:
+            raise  # handled by _execute: prepared again, approvals start over
+        except LedgerError as exc:
+            # Visible on the timeline; the approvals are kept, so "Retry the payout" finishes it once fixed.
+            record(lease, "payout_failed", f"Payout of {money(lease, tx['Amount']['value'])} to {to} failed: {exc.message}")
+            raise
         # Saved after every payout, so a retry never pays the same one twice.
         proposal.executed_hashes = [*proposal.executed_hashes, tx_hash]
         proposal.save(update_fields=["executed_hashes"])
-        to = names.get(tx.get("Destination"), tx.get("Destination"))
         record(lease, "payout", f"{money(lease, tx['Amount']['value'])} paid to {to}", tx_hash)
 
 
