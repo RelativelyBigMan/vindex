@@ -4,6 +4,7 @@ Tenant or landlord starts a draft; the other side and the arbiter join through s
 links. Tenant and landlord must both approve the arbiter, and the arbiter must accept the role.
 When all of that is true the lease moves to DRAFT and the settlement account is created.
 """
+import logging
 from datetime import timedelta
 
 from django.db import transaction
@@ -14,6 +15,7 @@ from . import lifecycle
 from .lifecycle import InvalidInput, InvalidTransition
 from .models import Invite, Lease, Party
 
+log = logging.getLogger(__name__)
 S = Lease.Status
 MIN_SECONDS_TO_RETURN = 600  # setup takes about 20 s; the tenant needs time to lock afterwards
 SIDES = ("tenant", "landlord")
@@ -60,7 +62,9 @@ def _require_pending(lease, doing):
 def accept_invite(token, party):
     invite = invite_for(token)
     if invite.accepted_by_id == party.pk:
-        return invite.lease
+        lease = invite.lease
+        _maybe_start(lease)  # a retry after a failed start completes it
+        return lease
     if invite.accepted_by_id or invite.declined_at:
         raise InvalidTransition("This invite has already been used.", "invite_used")
     with transaction.atomic():
@@ -95,11 +99,22 @@ def decline_invite(token, party):
     invite = invite_for(token)
     if invite.accepted_by_id:
         raise InvalidTransition("This invite has already been accepted.", "invite_used")
-    lease = invite.lease
+    if invite.declined_at:
+        raise InvalidTransition("This invite has already been declined.", "invite_used")
+    lease = Lease.objects.get(pk=invite.lease_id)
     _require_pending(lease, "decline")
+    current = lease.role_of(party)
+    if invite.role == Invite.Role.ARBITER:
+        if lease.arbiter_id and lease.arbiter_id != party.pk:
+            raise InvalidTransition("This agreement names a different arbiter.", "wrong_arbiter")
+        if current not in (None, "arbiter"):
+            raise InvalidTransition("You already have a role in this agreement.", "already_party")
+    elif current is not None:
+        raise InvalidTransition("You already have a role in this agreement.", "already_party")
+    if not lifecycle.cancel(lease, f"{party.label} declined the {invite.role} invite.", "declined"):
+        raise InvalidTransition("This agreement can't be declined any more.", "wrong_status")
     invite.declined_at = timezone.now()
     invite.save(update_fields=["declined_at"])
-    lifecycle.cancel(lease, f"{party.label} declined the {invite.role} invite.", "declined")
     lease.refresh_from_db()
     return lease
 
@@ -165,7 +180,12 @@ def _maybe_start(lease):
     if not ready:
         return
     if lease.cancel_after < timezone.now() + timedelta(seconds=MIN_SECONDS_TO_RETURN):
-        lifecycle.cancel(lease, "Everyone accepted, but too close to the lease end to lock the deposit safely.", "expired")
+        try:
+            lifecycle.cancel(lease, "Everyone accepted, but too close to the lease end to lock the deposit safely.", "expired")
+        except InvalidTransition as exc:
+            if exc.code != "busy":
+                raise
+            log.info("Lease %s: cancel is busy; a later call will finish it.", lease.pk)
         return
     if lifecycle._advance(lease, S.PENDING_ACCEPTANCE, S.DRAFT):
         lifecycle.record(lease, "all_accepted", "Tenant, landlord and arbiter accepted. Creating the settlement account.")

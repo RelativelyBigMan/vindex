@@ -600,3 +600,55 @@ class AgreementTests(LedgerMockedTestCase):
         lease.refresh_from_db()
         self.assertEqual(lease.status, S.CANCELLED)
         self.ledger.create_settlement_account.assert_not_called()
+
+    def test_existing_party_cannot_decline_through_an_invite(self):
+        from . import agreements
+        lease = self.draft()
+        with self.assertRaises(InvalidTransition) as ctx:
+            agreements.decline_invite(self.token(lease, "landlord"), self.tenant)
+        self.assertEqual(ctx.exception.code, "already_party")
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.PENDING_ACCEPTANCE)
+
+    def test_second_decline_is_refused(self):
+        from . import agreements
+        lease = self.draft()
+        token = self.token(lease, "landlord")
+        agreements.decline_invite(token, self.outsider)
+        with self.assertRaises(InvalidTransition) as ctx:
+            agreements.decline_invite(token, self.outsider)
+        self.assertEqual(ctx.exception.code, "invite_used")
+
+    def test_decline_not_recorded_when_cancel_fails(self):
+        from unittest import mock
+        from . import agreements
+        lease = self.draft()
+        invite = lease.invites.get(role="landlord")
+        with mock.patch.object(agreements.lifecycle, "cancel", return_value=False):
+            with self.assertRaises(InvalidTransition) as ctx:
+                agreements.decline_invite(invite.token, self.outsider)
+        self.assertEqual(ctx.exception.code, "wrong_status")
+        invite.refresh_from_db()
+        self.assertIsNone(invite.declined_at)
+
+    def test_reaccepting_retries_a_start_that_failed(self):
+        from unittest import mock
+        from . import agreements
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)
+        token = self.token(lease, "arbiter")
+        with mock.patch.object(agreements, "_maybe_start", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                agreements.accept_invite(token, self.arbiter)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.PENDING_ACCEPTANCE)
+        agreements.accept_invite(token, self.arbiter)  # same person retries
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.SETTLEMENT_READY)
+
+    def test_approve_arbiter_without_an_arbiter_is_refused(self):
+        from . import agreements
+        lease = self.draft()
+        with self.assertRaises(InvalidTransition) as ctx:
+            agreements.approve_arbiter(lease, self.tenant)
+        self.assertEqual(ctx.exception.code, "no_arbiter")
