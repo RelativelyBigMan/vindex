@@ -809,3 +809,50 @@ class SigningTests(LedgerMockedTestCase):
         self.assertEqual(req.status, "done")
         self.assertNotIn("user_token", req.result)
         self.assertEqual(req.party.xaman_user_token, "tok")
+
+
+class FaucetTests(LedgerMockedTestCase):
+    def test_activation_sends_xrp_once_per_day_and_only_to_new_accounts(self):
+        from . import faucet
+        self.ledger.account_exists.return_value = False
+        self.ledger.fund_xrp.return_value = "FUNDHASH"
+        self.ledger.get_balances.return_value = {"XRP": Decimal("500")}
+        self.assertEqual(faucet.activate(self.tenant), "FUNDHASH")
+        self.assertEqual(self.ledger.fund_xrp.call_args.args[1:], (self.tenant.address, faucet.ACTIVATE_XRP))
+        with self.assertRaises(InvalidTransition) as caught:
+            faucet.activate(self.tenant)
+        self.assertEqual(caught.exception.code, "too_soon")
+        self.ledger.account_exists.return_value = True
+        with self.assertRaises(InvalidTransition):
+            faucet.activate(self.landlord)
+
+    def test_tokens_need_a_trust_line_and_are_limited_per_currency(self):
+        from . import faucet
+        self.ledger.has_trust_line.return_value = False
+        with self.assertRaises(InvalidTransition) as caught:
+            faucet.grant_tokens(self.tenant, self.eur)
+        self.assertEqual(caught.exception.code, "no_trust_line")
+        self.ledger.has_trust_line.return_value = True
+        self.ledger.issue_tokens.return_value = "TOKHASH"
+        self.assertEqual(faucet.grant_tokens(self.tenant, self.eur), "TOKHASH")
+        self.assertEqual(self.ledger.issue_tokens.call_args.args[1:], (self.tenant.address, "EUR", faucet.TOKEN_GRANT))
+        with self.assertRaises(InvalidTransition):
+            faucet.grant_tokens(self.tenant, self.eur)
+
+    def test_a_failed_grant_does_not_use_up_the_day(self):
+        from . import faucet
+        self.ledger.has_trust_line.return_value = True
+        self.ledger.issue_tokens.side_effect = [LedgerError("network_error", "offline"), "TOKHASH"]
+        with self.assertRaises(LedgerError):
+            faucet.grant_tokens(self.tenant, self.eur)
+        self.assertEqual(faucet.grant_tokens(self.tenant, self.eur), "TOKHASH")
+
+    def test_status_reports_what_is_still_possible(self):
+        from . import faucet
+        self.ledger.account_exists.return_value = True
+        self.ledger.get_balances.return_value = {"XRP": Decimal("50"), "EUR": Decimal("0")}
+        self.ledger.has_trust_line.return_value = True
+        data = faucet.status(self.tenant)
+        self.assertEqual(data["activated"], True)
+        self.assertEqual(data["trust_lines"], {"EUR": True})
+        self.assertEqual(data["available"], {"activate": False, "tokens:EUR": True})
