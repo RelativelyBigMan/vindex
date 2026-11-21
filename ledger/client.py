@@ -1,6 +1,6 @@
 """XRPL network configuration and client factory.
 
-Only Testnet and Devnet are supported. This app keeps demo keys on the server,
+Only Testnet and Devnet are supported. This app keeps platform wallet keys on the server,
 so it must never talk to mainnet: assert_not_mainnet() runs at startup.
 """
 import asyncio
@@ -64,7 +64,7 @@ def assert_not_mainnet():
         if looks_like_mainnet(net[field]):
             raise ImproperlyConfigured(
                 f"Refusing to start: {field} URL {net[field]!r} is not an XRPL Testnet/Devnet host. "
-                "safeDeposit holds demo keys and must never run against mainnet."
+                "safeDeposit holds platform wallet keys and must never run against mainnet."
             )
 
 

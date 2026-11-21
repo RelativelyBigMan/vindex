@@ -10,7 +10,7 @@ FRIENDLY = {
     "tefBAD_QUORUM": "Not enough approvals: two of the three parties must sign.",
     "tefMAX_LEDGER": "The prepared transaction expired before it was submitted. It has to be prepared and signed again.",
     "terPRE_SEQ": "Transactions were sent out of order. Wait a few seconds and try again.",
-    "temDISABLED": "This feature is disabled on the current network. Set XRPL_NETWORK=devnet and rerun bootstrap_demo.",
+    "temDISABLED": "This feature is disabled on the current network. Set XRPL_NETWORK=devnet and rerun bootstrap.",
     # Extras that show up in practice.
     "tecUNFUNDED": "The account doesn't hold enough to do this.",
     "tecINSUFFICIENT_RESERVE": "The account needs more XRP to cover the ledger's reserve for this object.",

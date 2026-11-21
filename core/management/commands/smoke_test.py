@@ -1,4 +1,4 @@
-"""Run the three demo scenarios on the XRPL test network, with no UI, and verify each step on the ledger.
+"""Run the three lease scenarios on the XRPL test network, with no UI, and verify each step on the ledger.
 
 A  normal end:      settlement account -> escrow -> wait past CancelAfter -> the bot cancels -> tenant has it back
 B  early move-out:  settlement account -> escrow -> tenant releases -> 1,000 back to the tenant (tenant + landlord sign)

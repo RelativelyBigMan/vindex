@@ -29,7 +29,7 @@ export function poll(fn, ms) {
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     },
-    /** Refresh now (after an action or a persona switch). */
+    /** Refresh now (after an action). */
     now() {
       clearTimeout(timer);
       return tick();

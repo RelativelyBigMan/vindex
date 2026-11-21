@@ -768,7 +768,7 @@ legend::before { content: counter(section) "\2003"; }   /* numbered like \sectio
   .prose p, .abstract { text-align: left; }
 }
 
-/* ---------- 10. App components (lease pages, demo tools) ---------- */
+/* ---------- 10. App components (lease pages) ---------- */
 
 /* Roles: the API says "landlord", the first design said "owner". Same colour. */
 .party--landlord { --party-color: var(--color-owner); }
@@ -782,7 +782,7 @@ legend::before { content: counter(section) "\2003"; }   /* numbered like \sectio
 .balances dt { font-variant: small-caps; letter-spacing: 0.04em; color: var(--color-text-muted); font-size: var(--text-sm); }
 .balances dd { margin: 0; font-weight: 700; }
 
-/* Persona badge in the header */
+/* Signed-in account badge in the header */
 .persona-badge {
   display: inline-flex; align-items: center; gap: var(--space-2);
   padding: var(--space-1) var(--space-3);
@@ -793,8 +793,8 @@ legend::before { content: counter(section) "\2003"; }   /* numbered like \sectio
 .persona-badge:hover { background: none; border-color: var(--color-text); }
 .persona-badge__role { font-variant: small-caps; letter-spacing: 0.04em; color: var(--role-color, var(--color-text-muted)); }
 
-/* Toasts: transient notices, bottom right, above the demo bar */
-.toasts { position: fixed; right: var(--space-4); bottom: calc(var(--demo-bar-h, 0px) + var(--space-4)); z-index: 80; display: grid; gap: var(--space-2); width: min(26rem, calc(100vw - 2 * var(--space-4))); pointer-events: none; }
+/* Toasts: transient notices, bottom right */
+.toasts { position: fixed; right: var(--space-4); bottom: var(--space-4); z-index: 80; display: grid; gap: var(--space-2); width: min(26rem, calc(100vw - 2 * var(--space-4))); pointer-events: none; }
 .toast {
   pointer-events: auto;
   display: flex; gap: var(--space-3); align-items: flex-start; justify-content: space-between;
@@ -810,25 +810,6 @@ legend::before { content: counter(section) "\2003"; }   /* numbered like \sectio
 .toast--error { border-left-color: var(--color-danger); }
 .toast.is-leaving { opacity: 0; transform: translateY(8px); transition: opacity 200ms, transform 200ms; }
 .toast__close { border: 0; background: none; cursor: pointer; font-size: 1.25rem; line-height: 1; padding: 0 var(--space-1); color: var(--color-text-muted); }
-
-/* Demo bar: fixed strip with the demo-only tools */
-.demo-bar { position: fixed; inset: auto 0 0 0; z-index: 70; background: #141414; color: #f0f3f7; border-top: 1px solid #24282d; font-family: var(--font-mono); font-size: var(--text-xs); }
-.demo-bar__inner { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-4); min-height: 2.75rem; padding-block: var(--space-1); }
-.demo-bar__label { color: #21e46b; }
-.demo-bar a { color: #f0f3f7; }
-.demo-bar__group { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
-.demo-bar__spacer { flex: 1; }
-.chip {
-  display: inline-flex; align-items: center; gap: var(--space-2);
-  min-height: 2rem; padding: 0 var(--space-3);
-  border: 1px solid #4a5058; border-radius: var(--radius-pill);
-  background: none; color: inherit; font: inherit; cursor: pointer;
-  transition: border-color var(--transition), background var(--transition);
-}
-.chip:hover:not(:disabled) { border-color: #f0f3f7; }
-.chip[aria-pressed="true"] { background: #21e46b; border-color: #21e46b; color: #141414; }
-.chip:disabled { opacity: 0.5; cursor: progress; }
-body.has-demo-bar { --demo-bar-h: 2.75rem; padding-bottom: var(--demo-bar-h); }
 
 /* Spinner inside busy buttons and status lines */
 .spinner { display: inline-block; width: 1em; height: 1em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin 700ms linear infinite; flex: none; }
@@ -948,8 +929,6 @@ details[open] > summary { margin-bottom: var(--space-3); }
   .checklist li a { grid-column: 2; }
   .lease-row { grid-template-columns: 1fr; }
   .persona-badge__name { display: none; }
-  .demo-bar__inner { padding-block: var(--space-2); }
-  body.has-demo-bar { --demo-bar-h: 5.5rem; }
   .dialog { padding: var(--space-6); }
   .proof-banner { flex-direction: column; text-align: center; }
 }

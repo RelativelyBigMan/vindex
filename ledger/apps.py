@@ -6,7 +6,7 @@ class LedgerConfig(AppConfig):
     name = "ledger"
 
     def ready(self):
-        # Refuse to start if anything points at mainnet: this app holds demo keys.
+        # Refuse to start if anything points at mainnet: this app holds platform wallet keys.
         from .client import assert_not_mainnet
 
         assert_not_mainnet()
