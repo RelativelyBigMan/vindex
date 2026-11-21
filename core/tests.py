@@ -15,7 +15,7 @@ from ledger.errors import ExpiredPreparedTx, LedgerError
 
 from . import lifecycle
 from .lifecycle import InvalidInput, InvalidTransition
-from .models import Currency, Lease, Party, PlatformWallet
+from .models import Currency, Invite, Lease, Party, PlatformWallet
 
 S = Lease.Status
 MOCKED = [
@@ -498,3 +498,105 @@ class CancelAndExpiryTests(LedgerMockedTestCase):
         self.assertEqual(lease.events.filter(kind="returned").count(), 1)
         self.assertEqual(lifecycle.bot_pass(), [])
         self.ledger.cancel_escrow.assert_called_once()
+
+
+class AgreementTests(LedgerMockedTestCase):
+    def draft(self, creator=None, role="tenant", arbiter_address=""):
+        from . import agreements
+        return agreements.create_draft(
+            creator or self.tenant, role, currency=self.eur, amount=Decimal("1000"),
+            end_at=timezone.now() + timedelta(days=30), grace_minutes=60, title="Via Sparano 12", arbiter_address=arbiter_address,
+        )
+
+    def token(self, lease, role):
+        return lease.invites.get(role=role, revoked=False).token
+
+    def test_draft_creates_invites_for_the_other_two_roles(self):
+        lease = self.draft()
+        self.assertEqual((lease.status, lease.tenant, lease.landlord, lease.arbiter), (S.PENDING_ACCEPTANCE, self.tenant, None, None))
+        self.assertEqual(sorted(lease.invites.values_list("role", flat=True)), ["arbiter", "landlord"])
+        self.ledger.create_settlement_account.assert_not_called()
+
+    def test_landlord_can_start_too(self):
+        lease = self.draft(self.landlord, "landlord")
+        self.assertEqual((lease.landlord, lease.tenant), (self.landlord, None))
+        self.assertEqual(sorted(lease.invites.values_list("role", flat=True)), ["arbiter", "tenant"])
+
+    def test_everyone_accepts_and_approves_then_setup_starts(self):
+        from . import agreements
+        lease = self.draft()
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)
+        agreements.accept_invite(self.token(lease, "arbiter"), self.arbiter)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.PENDING_ACCEPTANCE)  # the arbiter came via invite: both must approve it
+        agreements.approve_arbiter(lease, self.tenant)
+        agreements.approve_arbiter(lease, self.landlord)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.SETTLEMENT_READY)
+        self.assertEqual(self.ledger.create_settlement_account.call_args.args[1], [p.address for p in (self.tenant, self.landlord, self.arbiter)])
+
+    def test_arbiter_named_by_address_counts_as_the_creators_approval(self):
+        from . import agreements
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        self.assertTrue(lease.tenant_approved_arbiter)
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)  # accepting approves the named arbiter
+        agreements.accept_invite(self.token(lease, "arbiter"), self.arbiter)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.SETTLEMENT_READY)
+
+    def test_named_arbiter_invite_only_works_for_that_address(self):
+        from . import agreements
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        with self.assertRaises(InvalidTransition):
+            agreements.accept_invite(self.token(lease, "arbiter"), self.outsider)
+
+    def test_one_person_one_role_and_invites_are_single_use(self):
+        from . import agreements
+        lease = self.draft()
+        with self.assertRaises(InvalidTransition):
+            agreements.accept_invite(self.token(lease, "landlord"), self.tenant)
+        token = self.token(lease, "landlord")
+        agreements.accept_invite(token, self.landlord)
+        agreements.accept_invite(token, self.landlord)  # idempotent for the same person
+        with self.assertRaises(InvalidTransition):
+            agreements.accept_invite(token, self.outsider)
+        with self.assertRaises(InvalidInput):
+            agreements.accept_invite("no-such-token", self.outsider)
+
+    def test_changing_the_arbiter_resets_approvals_and_reissues_the_invite(self):
+        from . import agreements
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        old = self.token(lease, "arbiter")
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)
+        agreements.change_arbiter(lease, self.landlord, self.outsider.address)
+        lease.refresh_from_db()
+        self.assertEqual((lease.arbiter, lease.arbiter_accepted), (self.outsider, False))
+        self.assertEqual((lease.tenant_approved_arbiter, lease.landlord_approved_arbiter), (False, True))
+        with self.assertRaises(InvalidInput):
+            agreements.accept_invite(old, self.arbiter)
+        with self.assertRaises(InvalidInput):
+            agreements.change_arbiter(lease, self.tenant, self.landlord.address)  # can't be one of the two sides
+
+    def test_decline_or_cancel_closes_the_agreement(self):
+        from . import agreements
+        lease = self.draft()
+        agreements.decline_invite(self.token(lease, "landlord"), self.outsider)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.CANCELLED)
+        other = self.draft()
+        with self.assertRaises(InvalidTransition):
+            agreements.cancel_by(other, self.landlord)
+        agreements.cancel_by(other, self.tenant)
+        other.refresh_from_db()
+        self.assertEqual(other.status, S.CANCELLED)
+
+    def test_agreement_too_close_to_its_end_is_cancelled_instead_of_started(self):
+        from . import agreements
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        # grace is 60 min and save() recomputes cancel_after, so move end_at: the return date is 1 minute away
+        Lease.objects.filter(pk=lease.pk).update(end_at=timezone.now() - timedelta(minutes=59), cancel_after=timezone.now() + timedelta(minutes=1))
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)
+        agreements.accept_invite(self.token(lease, "arbiter"), self.arbiter)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.CANCELLED)
+        self.ledger.create_settlement_account.assert_not_called()
