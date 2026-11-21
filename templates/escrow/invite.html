@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Invitation{% endblock %}
+
+{% block content %}
+<div data-invite-page data-token="{{ token }}">
+  <div class="page-header">
+    <h1 data-title>Invitation</h1>
+    <p data-subtitle class="muted"></p>
+  </div>
+  <div class="card" data-terms><span class="skeleton skeleton--block"></span></div>
+  <div class="card mt-8" data-decision hidden></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}<script type="module" src="{% static 'js/pages/invite.js' %}"></script>{% endblock %}

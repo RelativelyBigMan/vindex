@@ -5,16 +5,19 @@
 
 {% block content %}
 <div class="page-header">
-  <h1>Protect a deposit</h1>
-  <p>Name the three parties and the amount. The deposit is only locked when the tenant signs, in the last step.</p>
+  <h1>New deposit agreement</h1>
+  <p>Fill in the terms. Nothing goes on the ledger until the other side and the arbiter have accepted through their invite links.</p>
 </div>
 
-<p class="alert alert--warning" data-not-tenant hidden>
-  Only a tenant can start a deposit. <button type="button" class="btn btn--ghost btn--sm" data-become-tenant hidden>Act as the tenant</button>
-</p>
-
-{# The server re-validates every field (Decimal amounts, address format, three different accounts, dates). #}
 <form class="form card" data-lease-form novalidate>
+  <fieldset class="form">
+    <legend>You are</legend>
+    <div class="segmented" role="radiogroup" aria-label="Your role">
+      <label><input type="radio" name="role" value="tenant" checked><span>The tenant</span></label>
+      <label><input type="radio" name="role" value="landlord"><span>The landlord</span></label>
+    </div>
+  </fieldset>
+
   <fieldset class="form">
     <legend>Lease</legend>
     <div class="field">
@@ -25,8 +28,7 @@
     <div class="grid grid--2">
       <div class="field">
         <label for="id_amount">Deposit</label>
-        <input id="id_amount" name="amount" type="text" inputmode="decimal" autocomplete="off" required data-amount value="1000" aria-describedby="amount-help">
-        <small id="amount-help">In a test token, so the value stays steady during the lease.</small>
+        <input id="id_amount" name="amount" type="text" inputmode="decimal" autocomplete="off" required data-amount value="1000">
       </div>
       <div class="field">
         <label for="id_currency">Currency</label>
@@ -35,48 +37,36 @@
         </select>
       </div>
     </div>
-
     <div class="field">
       <span class="label" id="end-label">Lease end</span>
       <div class="segmented" role="radiogroup" aria-labelledby="end-label">
-        <label><input type="radio" name="end_mode" value="minutes" checked><span>In a few minutes (demo)</span></label>
-        <label><input type="radio" name="end_mode" value="date"><span>On a date</span></label>
+        <label><input type="radio" name="end_mode" value="date" checked><span>On a date</span></label>
+        <label><input type="radio" name="end_mode" value="minutes"><span>In some minutes (for testing)</span></label>
       </div>
     </div>
     <div class="grid grid--2">
-      <div class="field" data-end-minutes>
-        <label for="id_end_in_minutes">Ends in (minutes)</label>
-        <input id="id_end_in_minutes" name="end_in_minutes" type="number" min="1" max="525600" step="1" value="3" required>
-      </div>
-      <div class="field" data-end-date hidden>
+      <div class="field" data-end-date>
         <label for="id_end_date">Ends on</label>
-        <input id="id_end_date" name="end_date" type="date">
+        <input id="id_end_date" name="end_date" type="date" required>
+      </div>
+      <div class="field" data-end-minutes hidden>
+        <label for="id_end_in_minutes">Ends in (minutes)</label>
+        <input id="id_end_in_minutes" name="end_in_minutes" type="number" min="15" max="525600" step="1" value="30">
       </div>
       <div class="field">
         <label for="id_grace_minutes">Grace period (minutes)</label>
-        <input id="id_grace_minutes" name="grace_minutes" type="number" min="0" max="525600" step="1" value="1" required aria-describedby="grace-help">
+        <input id="id_grace_minutes" name="grace_minutes" type="number" min="0" max="525600" step="1" value="1440" required aria-describedby="grace-help">
         <small id="grace-help">Time after the lease end in which a damage claim is still possible. Then the deposit returns automatically.</small>
       </div>
     </div>
   </fieldset>
 
   <fieldset class="form">
-    <legend>Parties</legend>
-    <p class="small muted">The tenant is whoever you are acting as: <strong data-tenant-name>…</strong>. Use public addresses only. Never enter a seed phrase, secret or private key.</p>
+    <legend>Arbiter</legend>
     <div class="field">
-      <label for="id_landlord">Landlord</label>
-      <select id="id_landlord" name="landlord" required data-party-select="landlord"></select>
-      <input class="mono" name="landlord_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
-             aria-label="Landlord's XRP Ledger address" placeholder="r…">
-      <small data-paste-note="landlord" hidden>A pasted address can receive its share and counts as a signer on the ledger, but in this demo it can't approve splits from this site.</small>
-    </div>
-    <div class="field">
-      <label for="id_arbiter">Arbiter</label>
-      <select id="id_arbiter" name="arbiter" required data-party-select="arbiter" aria-describedby="arbiter-help"></select>
-      <input class="mono" name="arbiter_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" hidden
-             aria-label="Arbiter's XRP Ledger address" placeholder="r…">
-      <small id="arbiter-help">Independent of both sides. Listed arbiters hold a verified-arbiter credential on the ledger.</small>
-      <p class="alert alert--warning" data-arbiter-warning hidden></p>
+      <label for="id_arbiter_address">Arbiter's XRP Ledger address</label>
+      <input id="id_arbiter_address" class="mono" name="arbiter_address" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="r…" aria-describedby="arbiter-help">
+      <small id="arbiter-help">Optional. Someone independent of both of you. Leave it empty to send an arbiter invite link instead. The other side must approve the arbiter too.</small>
     </div>
   </fieldset>
 
@@ -86,17 +76,10 @@
   </label>
 
   <div class="row">
-    <button type="submit" class="btn btn--primary" data-submit>Create settlement account</button>
+    <button type="submit" class="btn btn--primary" data-submit>Create agreement and invite links</button>
     <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">Cancel</a>
   </div>
 </form>
-
-{# Shown after the form is sent: the live setup checklist, then the lock step. #}
-<section class="card" data-setup hidden aria-live="polite">
-  <h2 class="card__title">Setting up on the ledger</h2>
-  <p class="muted" data-setup-intro>A fresh settlement account is being created for this lease. Each step is a real transaction.</p>
-  <div class="mt-4" data-setup-body></div>
-</section>
 {% endblock %}
 
 {% block extra_js %}<script type="module" src="{% static 'js/pages/create.js' %}"></script>{% endblock %}

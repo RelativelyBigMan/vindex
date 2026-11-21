@@ -1,20 +1,18 @@
 /**
- * Lease detail: the main demo screen. Polls GET /api/leases/<id>/ every 3 s and renders it.
- * What the current persona may do comes ONLY from the API's `actions` list.
+ * Lease detail. Polls GET /api/leases/<id>/ every 3 s and renders it.
+ * What the account may do comes ONLY from the API's actions list.
  */
-import { anchorEvidence, approveSplit, addTrustLine, lockDeposit, proposeSplit, releaseDeposit, uploadEvidence, verifyEvidence } from "../actions.js";
+import { anchorEvidence, approveSplit, addTrustLine, lockDeposit, proposeSplit, releaseDeposit, retryPayout, uploadEvidence, verifyEvidence } from "../actions.js";
 import { get, post } from "../api.js";
-import { runBot } from "../app.js";
 import { partyCard, proposalCard, setupChecklist, splitBar, syncEvents } from "../parts.js";
 import { poll } from "../poll.js";
-import { config, currentMe, loadMe, onPersona } from "../session.js";
 import { splitForm } from "../splitform.js";
 import { ROLE_LABEL, busy, copyButton, el, extLink, fill, fmtCountdown, fmtTime, money, renderIfChanged, shortAddress, shortHash, statusBadge, statusLine, toast } from "../ui.js";
 
 const root = document.querySelector("[data-lease-page]");
 const leaseId = root.dataset.leaseId;
 const $ = (selector) => root.querySelector(selector);
-const SUBMITTING = "Submitting to the XRPL (about 4 s)";
+const IN_XAMAN = "Confirm in Xaman…";
 const ROLE_ORDER = ["tenant", "landlord", "arbiter"];
 
 let state = null;
@@ -35,7 +33,7 @@ async function refresh() {
       $("[data-content]").hidden = true;
       $("[data-forbidden]").hidden = false;
       $("[data-forbidden-text]").textContent = error.status === 404
-        ? "This deposit isn't visible to the persona you are acting as. Switch to its tenant, landlord or arbiter."
+        ? "This deposit isn't visible to your account."
         : error.message;
       $("[data-title]").textContent = "Deposit";
     } else {
@@ -74,7 +72,7 @@ async function act(button, label, fn) {
 function render() {
   const s = state;
   const me = s.me;
-  const tenant = s.parties[0];
+  const tenant = s.parties.find((p) => p.role === "tenant") || { name: "the tenant" };
   document.title = `${s.title || "Deposit"} · safeDeposit`;
   $("[data-title]").textContent = s.title || `Deposit of ${money(s.amount, s.currency)}`;
   $("[data-subtitle]").textContent = `${money(s.amount, s.currency_label)} · lease ends ${fmtTime(s.end_at)} · you are the ${s.role}`;
@@ -89,11 +87,20 @@ function render() {
   deadline = Math.min(deadline ?? Infinity, Date.now() + s.seconds_to_cancel_after * 1000);
 
   renderIfChanged($("[data-outcome]"), [s.status, s.error, s.proposals.find((p) => p.status === "EXECUTED")], (node) => renderOutcome(node, s, tenant));
-  renderIfChanged($("[data-parties]"), [s.parties, me?.party_id], (node) => node.replaceChildren(...s.parties.map((p) => partyCard(p, me))));
-  renderSetup(s, me);
-  renderEscrow(s);
-  renderIfChanged($("[data-settlement]"), s.settlement, (node) => renderSettlement(node, s));
-  $("[data-live-tag]").hidden = !(s.settlement && s.settlement.source === "ledger");
+  renderIfChanged($("[data-parties]"), [s.parties, s.open_roles, me?.party_id], (node) => node.replaceChildren(
+    ...s.parties.map((p) => partyCard(p, me)),
+    ...s.open_roles.map((role) => el("article", { class: `card party role-${role}` }, el("p", { class: "sc muted", text: ROLE_LABEL[role] }), el("p", { class: "muted", text: "Not accepted yet" })))));
+  renderAgreement(s);
+  const onLedger = !["PENDING_ACCEPTANCE", "CANCELLED"].includes(s.status) || Boolean(s.settlement);
+  $("[data-ledger-cards]").hidden = !onLedger;
+  if (onLedger) {
+    renderSetup(s, me);
+    renderEscrow(s);
+    renderIfChanged($("[data-settlement]"), s.settlement, (node) => renderSettlement(node, s));
+    $("[data-live-tag]").hidden = !(s.settlement && s.settlement.source === "ledger");
+  } else {
+    $("[data-setup]").hidden = true;
+  }
   renderActions(s, me);
   renderProposals(s);
   renderEvidence(s, me);
@@ -123,9 +130,61 @@ function renderOutcome(node, s, tenant) {
       el("p", { text: s.error || "Setup failed." }),
       el("p", { text: "No deposit was locked. You can start again with the same details." }),
       el("p", {}, el("a", { class: "btn btn--primary", href: "/leases/new/", text: "Start again" }))));
+  } else if (s.status === "CANCELLED") {
+    node.replaceChildren(el("div", { class: "outcome outcome--failed" },
+      el("p", { class: "outcome__mark", "aria-hidden": "true", text: "×" }),
+      el("h2", { text: "This agreement was cancelled" }),
+      el("p", { text: s.error || "It was closed before any deposit was locked." })));
   } else {
     node.replaceChildren();
   }
+}
+
+function renderAgreement(s) {
+  const card = $("[data-agreement]");
+  card.hidden = s.status !== "PENDING_ACCEPTANCE";
+  if (card.hidden || acting) return;
+  renderIfChanged($("[data-agreement-body]"), [s.agreement, s.invites, s.actions, s.parties, openForm], (node) => {
+    const a = s.agreement;
+    const arbiter = s.parties.find((p) => p.role === "arbiter");
+    const check = (done, text) => el("li", { class: done ? "is-done" : "" }, el("span", { text }));
+    const items = el("ul", { class: "checklist" },
+      check(s.parties.some((p) => p.role === "tenant"), "Tenant accepted"),
+      check(s.parties.some((p) => p.role === "landlord"), "Landlord accepted"),
+      check(a.arbiter_accepted, arbiter ? `Arbiter ${arbiter.name} accepted the role` : "Arbiter accepted the role"),
+      check(a.tenant_approved_arbiter, "Tenant approved the arbiter"),
+      check(a.landlord_approved_arbiter, "Landlord approved the arbiter"));
+    const invites = s.invites.map((invite) => el("div", { class: "field" },
+      el("span", { class: "label", text: `Invite link for the ${invite.role}` }),
+      el("div", { class: "row" }, el("code", { class: "mono small", text: invite.url }), copyButton(invite.url, "Copy link"))));
+    const buttons = [];
+    if (s.actions.includes("approve_arbiter")) {
+      buttons.push(el("button", { type: "button", class: "btn btn--primary", text: `Approve ${arbiter ? arbiter.name : "the arbiter"}`,
+        on: { click: (e) => act(e.currentTarget, "Saving…", () => post(`/api/leases/${leaseId}/approve-arbiter/`)) } }));
+    }
+    if (s.actions.includes("change_arbiter")) {
+      buttons.push(el("button", { type: "button", class: "btn", "aria-expanded": String(openForm === "arbiter"), on: { click: () => toggleForm("arbiter") } }, arbiter ? "Propose a different arbiter" : "Name the arbiter by address"));
+    }
+    if (s.actions.includes("cancel")) {
+      buttons.push(el("button", { type: "button", class: "btn btn--ghost", text: "Cancel agreement",
+        on: { click: (e) => { if (window.confirm("Cancel this agreement for everyone?")) act(e.currentTarget, "Cancelling…", () => post(`/api/leases/${leaseId}/cancel/`)); } } }));
+    }
+    let form = null;
+    if (openForm === "arbiter" && s.actions.includes("change_arbiter")) {
+      const input = el("input", { class: "mono", name: "address", maxlength: "64", placeholder: "r…", spellcheck: "false", autocomplete: "off", "aria-label": "Arbiter's XRP Ledger address" });
+      form = el("form", { class: "form mt-4", on: { submit: (e) => {
+        e.preventDefault();
+        act(e.submitter || e.currentTarget.querySelector("button"), "Saving…", async () => {
+          const next = await post(`/api/leases/${leaseId}/arbiter/`, { address: input.value.trim() });
+          openForm = null;
+          return next;
+        });
+      } } }, el("p", { class: "small muted", text: "Changing the arbiter resets both approvals and the arbiter's acceptance, and creates a new arbiter invite link." }), input,
+        el("div", { class: "actions" }, el("button", { type: "submit", class: "btn btn--primary", text: "Propose this arbiter" })));
+    }
+    fill(node, items, invites.length > 0 && el("div", { class: "mt-4 stack" }, el("p", { class: "small muted", text: "Send each link to the right person. Each works once." }), ...invites),
+      buttons.length > 0 && el("div", { class: "actions mt-4" }, buttons), form);
+  });
 }
 
 function renderSetup(s, me) {
@@ -134,47 +193,48 @@ function renderSetup(s, me) {
   const visible = ["DRAFT", "SETTLEMENT_READY"].includes(s.status);
   card.hidden = !visible;
   if (!visible) return;
-  renderIfChanged($("[data-setup-body]"), [s.status, s.setup_step, s.actions, currentMe()?.balances, s.events.length], (node) => {
-    node.replaceChildren(setupChecklist(s), lockStep(s, me));
+  renderIfChanged($("[data-setup-body]"), [s.status, s.setup_step, s.actions, faucetState, s.events.length], (node) => {
+    node.replaceChildren(setupChecklist(s), lockStep(s));
   });
 }
 
-/** After setup: the tenant locks the deposit. A browser wallet first needs the trust line and the tokens. */
-function lockStep(s, me) {
+/** After setup: the tenant locks the deposit; the faucet state says whether the account can hold and pay it. */
+function lockStep(s) {
   if (s.status === "DRAFT") return statusLine("Waiting for the ledger to validate each step (about 20 s in total)…");
-  if (!s.actions.includes("lock_deposit")) return el("p", { class: "note mt-4", text: `The settlement account is ready. Waiting for ${s.parties[0].name} (tenant) to lock the deposit.` });
-  const full = currentMe();
-  const lock = el("button", {
-    type: "button", class: "btn btn--primary btn--lg",
-    on: { click: (event) => act(event.currentTarget, me.can_sign ? SUBMITTING : "Confirm in your wallet…", () => lockDeposit(leaseId, me)) },
-  }, "Sign & lock deposit");
+  if (!s.actions.includes("lock_deposit")) {
+    const tenant = s.parties.find((p) => p.role === "tenant");
+    return el("p", { class: "note mt-4", text: `The settlement account is ready. Waiting for ${tenant ? tenant.name : "the tenant"} to lock the deposit.` });
+  }
   const box = el("div", { class: "mt-8 stack" },
     el("p", { text: `Lock ${money(s.amount, s.currency)} in an escrow that pays into the settlement account, or back to you after ${fmtTime(s.cancel_after)}.` }));
-  if (!me.can_sign && full && full.party_id === me.party_id && full.balances) {
-    // Wallet signing (Patch 5): check the wallet can hold and pay the deposit token before asking it to sign.
-    const held = full.balances[s.currency];
-    if (held === undefined) {
-      box.append(el("p", { class: "alert alert--warning", text: `Your wallet has no trust line for ${s.currency_label} yet, so it can't hold the deposit token.` }),
-        el("button", { type: "button", class: "btn", text: `Add ${s.currency} trust line in wallet`, on: { click: (event) => walletStep(event.currentTarget, () => addTrustLine(s.currency, me)) } }));
-      return box;
-    }
-    if (Number(held) < Number(s.amount)) {
-      box.append(el("p", { class: "alert alert--warning", text: `Your wallet holds ${money(held, s.currency)}; the deposit is ${money(s.amount, s.currency)}.` }),
-        config.demo_mode && el("button", { type: "button", class: "btn", text: "Top up test tokens", on: { click: (event) => walletStep(event.currentTarget, () => post("/api/demo/fund/")) } }));
-      return box;
-    }
+  const funds = faucetState;
+  if (funds && !funds.trust_lines[s.currency]) {
+    box.append(el("p", { class: "alert alert--warning", text: `Your account can't hold ${s.currency_label} yet.` }),
+      el("button", { type: "button", class: "btn", text: `Add ${s.currency} trust line in Xaman`, on: { click: (event) => walletStep(event.currentTarget, () => addTrustLine(s.currency)) } }));
+    return box;
   }
-  box.append(el("div", { class: "actions" }, lock),
-    el("p", { class: "small muted", text: me.can_sign ? "Demo mode: signed on the server with this persona's Testnet key." : "Signed in your own wallet. safeDeposit never sees your key." }));
+  if (funds && Number(funds.balances[s.currency] || 0) < Number(s.amount)) {
+    box.append(el("p", { class: "alert alert--warning" }, `You hold ${money(funds.balances[s.currency] || 0, s.currency)}; the deposit is ${money(s.amount, s.currency)}. Get test tokens on `, el("a", { href: "/leases/", text: "your dashboard" }), "."));
+    return box;
+  }
+  box.append(el("div", { class: "actions" }, el("button", {
+    type: "button", class: "btn btn--primary btn--lg",
+    on: { click: (event) => act(event.currentTarget, IN_XAMAN, () => lockDeposit(leaseId)) },
+  }, "Lock deposit in Xaman")), el("p", { class: "small muted", text: "Signed in your own Xaman app. safeDeposit never sees your key." }));
   return box;
 }
 
+let faucetState = null;
+async function loadFaucet() {
+  try { faucetState = await get("/api/faucet/", { quiet: true }); } catch { faucetState = null; }
+}
+
 async function walletStep(button, fn) {
-  await busy(button, "Waiting for the ledger…", async () => {
+  await busy(button, IN_XAMAN, async () => {
     try {
       await fn();
-      await new Promise((resolve) => setTimeout(resolve, 4000)); // let the ledger validate it
-      await loadMe(true);
+      await loadFaucet();
+      render();
     } catch (error) {
       if (!error.code) toast(error.message, "warning");
     }
@@ -230,19 +290,18 @@ function renderSettlement(node, s) {
 /* ---------- actions ---------- */
 function renderActions(s, me) {
   const card = $("[data-actions-card]");
-  const relevant = s.actions.filter((a) => !a.startsWith("sign:") && a !== "upload_evidence" && a !== "lock_deposit");
+  const relevant = s.actions.filter((a) => !a.startsWith("sign:") && !a.startsWith("retry:") && !["upload_evidence", "lock_deposit", "approve_arbiter", "change_arbiter", "cancel"].includes(a));
   if (acting) return;
   card.hidden = relevant.length === 0;
   if (card.hidden) return;
   renderIfChanged($("[data-actions]"), [relevant, s.status, s.settlement?.balance, me?.party_id, openForm], (node) => {
-    const confirmLabel = me.can_sign ? SUBMITTING : "Confirm in your wallet…";
     const buttons = [];
     if (relevant.includes("release_early")) {
       buttons.push(el("button", {
         type: "button", class: "btn btn--tint-tenant",
         on: { click: (event) => {
           if (!window.confirm("Move out early? The deposit leaves the escrow and goes to the settlement account, where the landlord (or the arbiter) must approve your refund.")) return;
-          act(event.currentTarget, confirmLabel, () => releaseDeposit(leaseId, "early_move_out", me));
+          act(event.currentTarget, "Submitting to the XRPL (about 4 s)", () => releaseDeposit(leaseId, "early_move_out"));
         } },
       }, "I'm moving out early"));
     }
@@ -263,21 +322,22 @@ function renderActions(s, me) {
         total: s.amount, code: s.currency, submitLabel: "Claim damage and propose this split", tenant: s.amount,
         intro: "Claiming moves the deposit out of the escrow into the 2-of-3 settlement account, then proposes your split. You can't take anything alone: the tenant or the arbiter must approve.",
         onCancel: () => toggleForm(null),
-        onSubmit: (values, button) => act(button, confirmLabel, async () => {
-          await releaseDeposit(leaseId, "damage_claim", me);
+        onSubmit: (values, button) => act(button, "Releasing and preparing the split…", async () => {
+          await releaseDeposit(leaseId, "damage_claim");
           openForm = null;
-          return proposeSplit(leaseId, values.tenant, values.landlord, values.reason);
+          const { proposal_id: proposalId } = await proposeSplit(leaseId, values.tenant, values.landlord, values.reason);
+          return approveSplit(proposalId);
         }),
       });
     } else if (openForm === "propose" && relevant.includes("propose") && s.settlement?.balance) {
       form = splitForm({
         total: s.settlement.balance, code: s.currency, submitLabel: "Propose this split",
-        intro: `The settlement account holds ${money(s.settlement.balance, s.currency)}. A new proposal replaces the open one${me.can_sign ? " and counts as your approval" : ""}.`,
+        intro: `The settlement account holds ${money(s.settlement.balance, s.currency)}. A new proposal replaces the open one; you then approve it in Xaman.`,
         onCancel: () => toggleForm(null),
         onSubmit: (values, button) => act(button, "Preparing the payout…", async () => {
-          const next = await proposeSplit(leaseId, values.tenant, values.landlord, values.reason);
+          const { proposal_id: proposalId } = await proposeSplit(leaseId, values.tenant, values.landlord, values.reason);
           openForm = null;
-          return next;
+          return approveSplit(proposalId);
         }),
       });
     }
@@ -295,7 +355,7 @@ function renderProposals(s) {
   section.hidden = s.proposals.length === 0;
   renderIfChanged($("[data-proposals]"), [s.proposals, s.actions], (node) => {
     node.replaceChildren(...s.proposals.filter((p) => p.status !== "SUPERSEDED" || s.proposals.length === 1).map((proposal) =>
-      proposalCard(proposal, s, (button) => act(button, SUBMITTING, () => approveSplit(proposal.id)))));
+      proposalCard(proposal, s, (button) => act(button, IN_XAMAN, () => approveSplit(proposal.id)), (button) => act(button, "Submitting…", () => retryPayout(proposal.id)))));
   });
 }
 
@@ -337,10 +397,10 @@ function evidenceCard(item, me) {
         : el("p", { class: "verdict--mismatch", text: "Not anchored yet" }),
       item.anchor_tx_hash && el("div", { class: "actions" },
         el("button", { type: "button", class: "btn btn--sm", text: "Verify", on: { click: check(false) } }),
-        el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Verify an altered copy", title: "Demo: changes one byte of the photo in memory, then checks it", on: { click: check(true) } })),
+        el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Verify an altered copy", title: "Changes one byte of the photo in memory, then checks it", on: { click: check(true) } })),
       !item.anchor_tx_hash && me && item.uploaded_by_id === me.party_id && el("button", {
         type: "button", class: "btn btn--sm", text: "Anchor on the ledger",
-        on: { click: (event) => act(event.currentTarget, SUBMITTING, async () => { await anchorEvidence(item, me); }) },
+        on: { click: (event) => act(event.currentTarget, IN_XAMAN, async () => { await anchorEvidence(item); }) },
       }),
       verdict && el("p", { class: `verdict ${verdict.match ? "verdict--match" : "verdict--mismatch"}`, role: "status", text: verdict.text })));
 }
@@ -352,8 +412,8 @@ $("[data-evidence-form]").addEventListener("submit", (event) => {
   if (!file) return toast("Choose a photo first.", "warning");
   if (file.size > 5 * 1024 * 1024) return toast("Photos can be at most 5 MB.", "warning");
   const data = new FormData(form);
-  return act(form.querySelector("button[type=submit]"), "Uploading and anchoring (about 5 s)", async () => {
-    const item = await uploadEvidence(leaseId, data, state.me);
+  return act(form.querySelector("button[type=submit]"), "Uploading, then confirm in Xaman…", async () => {
+    const item = await uploadEvidence(leaseId, data);
     form.reset();
     if (item.anchor_error) toast(`Photo stored, but not anchored yet: ${item.anchor_error}`, "warning");
     else toast("Photo stored and its fingerprint anchored on the ledger.", "success");
@@ -403,12 +463,10 @@ function tick() {
     dueShown = true; // built once, so the button keeps its state between polls
     node.textContent = "due";
     node.classList.add("countdown--due");
-    fill(label, "Return date passed. The bot returns it about 10 s later. ",
-      config.demo_mode && el("button", { type: "button", class: "btn btn--ghost btn--sm", text: "Run bot now", on: { click: (event) => runBot(event.currentTarget) } }));
+    label.textContent = "Return date passed. The bot returns it about 10 s later.";
   }
 }
 
 setInterval(tick, 1000);
-onPersona(() => poller?.now());
-document.addEventListener("bot:ran", () => poller?.now());
+loadFaucet().then(() => state && render());
 poller = poll(refresh, 3000);

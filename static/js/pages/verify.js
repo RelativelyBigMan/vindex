@@ -4,7 +4,7 @@
  * GET /api/leases/<id>/public/ returns addresses and the escrow's sequence number, no secrets.
  */
 import { get } from "../api.js";
-import { hexToText, optional, rippleTime, withLedger } from "../ledger.js";
+import { optional, rippleTime, withLedger } from "../ledger.js";
 import { config } from "../session.js";
 import { el, extLink, fill, fmtTime, money, shortAddress } from "../ui.js";
 
@@ -12,7 +12,6 @@ const root = document.querySelector("[data-verify-page]");
 const leaseId = root.dataset.leaseId;
 const $ = (selector) => root.querySelector(selector);
 const LSF_DISABLE_MASTER = 0x00100000;
-const LSF_ACCEPTED = 0x00010000;
 
 function setStatus(text, spinning = false) {
   fill($("[data-verify-status]"), spinning && el("span", { class: "spinner", "aria-hidden": "true" }), text);
@@ -46,7 +45,6 @@ async function readLedger(where) {
       out.settlement_lines = out.settlement && await request({ command: "account_lines", account: where.settlement_address, peer: where.issuer_address, ...validated });
     }
     out.tenant_lines = await optional(request({ command: "account_lines", account: where.tenant_address, peer: where.issuer_address, ...validated }));
-    out.arbiter_credentials = await optional(request({ command: "account_objects", account: where.arbiter_address, type: "credential", ...validated }));
     return out;
   });
 }
@@ -60,9 +58,6 @@ function render(where, data) {
   const signers = (signerList?.SignerEntries || []).map((entry) => entry.SignerEntry);
   const expected = [where.tenant_address, where.landlord_address, where.arbiter_address];
   const settlementBalance = balanceOf(data.settlement_lines, where.currency);
-  const credential = (data.arbiter_credentials?.account_objects || []).find((object) =>
-    object.Subject === where.arbiter_address && object.Issuer === where.credential_registry
-    && hexToText(object.CredentialType) === where.arbiter_credential);
 
   const checks = [];
   if (escrow) {
@@ -91,8 +86,6 @@ function render(where, data) {
   } else {
     checks.push(check(where.settlement_address ? false : null, where.settlement_address ? "The settlement account wasn't found on the ledger." : "The settlement account is still being set up."));
   }
-  checks.push(check(credential ? Boolean(credential.Flags & LSF_ACCEPTED) : false,
-    "The arbiter holds an accepted verified-arbiter credential from the mediation registry."));
   if (where.evidence.length) {
     checks.push(check(true, `${where.evidence.length} photo fingerprint${where.evidence.length === 1 ? " is" : "s are"} anchored on the ledger. The photos themselves stay private to the parties.`));
   }

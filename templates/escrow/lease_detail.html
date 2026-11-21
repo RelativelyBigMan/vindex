@@ -17,12 +17,17 @@
   <p class="alert alert--warning" data-offline hidden>Connection lost. Showing the last known state; retrying…</p>
 
   <div class="card empty" data-forbidden hidden>
-    <p data-forbidden-text>This deposit isn't visible to the persona you are acting as.</p>
+    <p data-forbidden-text>This deposit isn't visible to your account.</p>
     <a class="btn btn--ghost" href="{% url 'escrow:dashboard' %}">My leases</a>
   </div>
 
   <div data-content hidden>
     <div data-outcome></div>
+
+    <section class="card mt-8" data-agreement hidden aria-labelledby="agreement-heading">
+      <h2 id="agreement-heading" class="card__title">Waiting for acceptance</h2>
+      <div data-agreement-body></div>
+    </section>
 
     <section aria-labelledby="parties-heading">
       <h2 id="parties-heading" class="visually-hidden">Parties</h2>

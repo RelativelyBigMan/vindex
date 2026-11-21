@@ -6,38 +6,27 @@
 {% block content %}
 <div class="page-header row row--between">
   <div>
-    <h1>My leases</h1>
-    <p>Deposits where <span data-me-name>you</span> are the tenant, landlord or arbiter.</p>
+    <h1>My deposits</h1>
+    <p>Agreements where <span data-me-greeting>you</span> are the tenant, landlord or arbiter.</p>
   </div>
-  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}" data-new-lease>New deposit</a>
+  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">New agreement</a>
 </div>
 
-<div data-loading aria-hidden="true">
-  <span class="skeleton skeleton--block"></span>
+<section class="card" data-faucet aria-labelledby="faucet-heading">
+  <div class="row row--between"><h2 id="faucet-heading" class="card__title">Test funds</h2><span class="badge">{{ escrow_config.network.name }} only</span></div>
+  <p class="small muted">Test XRP and test tokens have no value. Each step works once a day.</p>
+  <div class="mt-4" data-faucet-body><span class="skeleton"></span></div>
+</section>
+
+<div data-loading aria-hidden="true" class="mt-8"><span class="skeleton skeleton--block"></span></div>
+<div class="stack mt-8" data-groups hidden></div>
+
+<div class="card empty mt-8" data-empty hidden>
+  <p>No agreements yet.</p>
+  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">Start your first agreement</a>
 </div>
 
-<div class="table-wrap" data-leases hidden>
-  <table class="table">
-    <caption class="visually-hidden">Your leases</caption>
-    <thead>
-      <tr>
-        <th scope="col">Property</th>
-        <th scope="col">Your role</th>
-        <th scope="col">Automatic return</th>
-        <th scope="col" class="num">Deposit</th>
-        <th scope="col">Status</th>
-      </tr>
-    </thead>
-    <tbody data-lease-rows></tbody>
-  </table>
-</div>
-
-<div class="card empty" data-empty hidden>
-  <p>No deposits here yet for this persona.</p>
-  <a class="btn btn--primary" href="{% url 'escrow:lease_create' %}">Protect your first deposit</a>
-</div>
-
-<div class="card empty" data-load-error hidden>
+<div class="card empty mt-8" data-load-error hidden>
   <p data-load-error-text>The list couldn't be loaded.</p>
   <button type="button" class="btn btn--ghost" data-retry>Try again</button>
 </div>
