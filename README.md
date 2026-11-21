@@ -7,6 +7,8 @@ to an account that only two of tenant, landlord and an independent, credentialed
 safeDeposit never holds the money and cannot move it. Built in 24 hours for IXH26 (Track 2, XRPL applications);
 demo-ready, not production-ready.
 
+A page-by-page guide to using the site is in [docs/USER_GUIDE.md](docs/USER_GUIDE.md).
+
 ## How it works
 
 ```mermaid
