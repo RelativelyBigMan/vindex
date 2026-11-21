@@ -1,5 +1,7 @@
 # safeDeposit — project context (read before every task)
 
+New to the codebase? Read `docs/HANDOFF.md` first: a map of every file, the flows, the API and known gaps.
+
 Adapted from "Cauzione — Fable build prompts (Django + JS)". Decisions taken on 2026-11-20 that differ from that doc:
 - The app is called **safeDeposit** (the doc's working name was Cauzione). Tagline: "Your deposit, returned by the ledger."
 - **No Bootstrap, no CDNs.** The UI uses the existing "whitepaper" design in `static/css/global.css` and `templates/` (see README.md for its building blocks and branding rules). Third-party browser code (xrpl.js) is self-hosted in `static/vendor/` so a strict CSP holds and no visitor IP reaches a third party.
