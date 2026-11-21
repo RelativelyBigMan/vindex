@@ -25,7 +25,6 @@ XRPL_NETWORK = os.environ.get("XRPL_NETWORK", "testnet").strip().lower()
 # Xaman (https://apps.xumm.dev): the server creates sign requests with these. Never sent to the browser.
 XAMAN_API_KEY = os.environ.get("XAMAN_API_KEY", "").strip()
 XAMAN_API_SECRET = os.environ.get("XAMAN_API_SECRET", "").strip()
-DEMO_MODE = False  # removed in Task 3; kept so existing modules import
 
 INSTALLED_APPS = [
     "django.contrib.admin",

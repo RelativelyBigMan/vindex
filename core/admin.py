@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Currency, Evidence, LedgerEvent, Lease, Party, PlatformWallet, SettlementProposal
+from .models import Currency, Evidence, FaucetGrant, Invite, LedgerEvent, Lease, Party, PlatformWallet, SettlementProposal, XamanRequest
 
 
 @admin.register(PlatformWallet)
@@ -12,10 +12,9 @@ class PlatformWalletAdmin(admin.ModelAdmin):
 
 @admin.register(Party)
 class PartyAdmin(admin.ModelAdmin):
-    list_display = ("display_name", "role", "wallet_type", "address")
-    list_filter = ("role", "wallet_type")
+    list_display = ("display_name", "address", "created_at")
     search_fields = ("display_name", "address")
-    exclude = ("seed",)
+    exclude = ("xaman_user_token",)
 
 
 @admin.register(Currency)
@@ -25,8 +24,8 @@ class CurrencyAdmin(admin.ModelAdmin):
 
 @admin.register(Lease)
 class LeaseAdmin(admin.ModelAdmin):
-    list_display = ("id", "status", "setup_step", "amount", "currency", "tenant", "landlord", "cancel_after", "archived", "created_at")
-    list_filter = ("status", "currency", "archived")
+    list_display = ("id", "status", "setup_step", "amount", "currency", "tenant", "landlord", "arbiter", "cancel_after", "created_at")
+    list_filter = ("status", "currency")
     search_fields = ("id", "settlement_address", "escrow_owner")
     # Secrets stay out of the admin; ledger facts are read-only so they can't drift from the ledger.
     exclude = ("settlement_seed", "fulfillment_hex")
@@ -34,6 +33,12 @@ class LeaseAdmin(admin.ModelAdmin):
         "end_at", "grace_minutes", "cancel_after", "settlement_address", "condition_hex",
         "escrow_owner", "escrow_sequence", "created_at", "updated_at",
     )
+
+
+@admin.register(Invite)
+class InviteAdmin(admin.ModelAdmin):
+    list_display = ("lease", "role", "accepted_by", "accepted_at", "declined_at", "revoked")
+    exclude = ("token",)
 
 
 @admin.register(SettlementProposal)
@@ -54,3 +59,15 @@ class LedgerEventAdmin(admin.ModelAdmin):
     list_display = ("created_at", "lease", "kind", "summary", "tx_hash")
     list_filter = ("kind",)
     search_fields = ("summary", "tx_hash")
+
+
+@admin.register(XamanRequest)
+class XamanRequestAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "purpose", "status", "party", "lease")
+    list_filter = ("purpose", "status")
+    readonly_fields = ("result",)
+
+
+@admin.register(FaucetGrant)
+class FaucetGrantAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "party", "kind")

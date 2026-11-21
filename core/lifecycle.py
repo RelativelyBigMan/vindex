@@ -1,7 +1,8 @@
 """Lease lifecycle: every status transition, each one guarded.
 
-    DRAFT -> SETTLEMENT_READY -> ACTIVE -> RETURNED
-                                 ACTIVE -> IN_SETTLEMENT -> SETTLED        (FAILED on setup errors)
+    PENDING_ACCEPTANCE -> DRAFT -> SETTLEMENT_READY -> ACTIVE -> RETURNED
+                                                       ACTIVE -> IN_SETTLEMENT -> SETTLED
+    FAILED on setup errors; CANCELLED before the deposit is locked.
 
 Rules followed throughout:
 - The ledger is the source of truth. A transition first succeeds on the ledger, then the
@@ -28,7 +29,7 @@ from xrpl.wallet import Wallet
 from ledger import services
 from ledger.errors import ExpiredPreparedTx, LedgerError
 
-from .models import Evidence, Lease, LedgerEvent, Party, PlatformWallet, SettlementProposal
+from .models import Evidence, Lease, LedgerEvent, PlatformWallet, SettlementProposal
 
 log = logging.getLogger(__name__)
 
@@ -86,20 +87,11 @@ def parse_amount(value, name="amount"):
     return amount
 
 
-def wallet_for(party):
-    """The demo wallet the server holds for a party (demo mode only)."""
-    if not party.seed:
-        raise InvalidTransition(
-            f"{party.display_name} uses their own wallet, so the server can't sign for them.", "wallet_required"
-        )
-    return Wallet.from_seed(party.seed)
-
-
 def platform_wallet(role):
     try:
         return Wallet.from_seed(PlatformWallet.objects.get(role=role).seed)
     except PlatformWallet.DoesNotExist as exc:
-        raise InvalidTransition("The demo wallets are missing. Run bootstrap_demo first.", "not_bootstrapped") from exc
+        raise InvalidTransition("The platform wallets are missing. Run bootstrap first.", "not_bootstrapped") from exc
 
 
 def record(lease, kind, summary, tx_hash=""):
@@ -225,29 +217,6 @@ def _run_setup(lease_id):
 
 # ---- escrow: SETTLEMENT_READY -> ACTIVE ----
 
-def create_escrow_demo(lease):
-    """Demo mode: the tenant's server-held wallet locks the deposit in a token escrow."""
-    with _exclusive(lease):
-        lease.refresh_from_db()
-        _require_status(lease, S.SETTLEMENT_READY, "lock the deposit")
-        wallet = wallet_for(lease.tenant)
-        if _adopt_escrow_from_ledger(lease):
-            return lease  # an earlier attempt already locked it; locking again would take the deposit twice
-        code, issuer = lease.currency.code, lease.currency.issuer_address
-        held = services.get_token_balance(wallet.address, code, issuer)
-        if held < lease.amount:
-            raise InvalidInput(
-                f"{lease.tenant.display_name} holds {money(lease, held)} but the deposit is {money(lease, lease.amount)}. "
-                "Top up test funds first.",
-                "insufficient_funds",
-            )
-        tx_hash, sequence = services.create_escrow(
-            wallet, lease.settlement_address, code, issuer, lease.amount, lease.condition_hex, lease.cancel_after
-        )
-        _mark_active(lease, wallet.address, sequence, tx_hash)
-    return lease
-
-
 def _adopt_escrow_from_ledger(lease):
     """Pick up an escrow that exists on the ledger but that we never recorded. -> True when the lease became ACTIVE.
 
@@ -268,7 +237,7 @@ def _adopt_escrow_from_ledger(lease):
 
 def _mark_active(lease, owner, sequence, tx_hash):
     if _advance(lease, S.SETTLEMENT_READY, S.ACTIVE, escrow_owner=owner, escrow_sequence=sequence):
-        record(lease, "escrow_created", f"{lease.tenant.display_name} locked {money(lease, lease.amount)} in escrow", tx_hash)
+        record(lease, "escrow_created", f"{lease.tenant.label} locked {money(lease, lease.amount)} in escrow", tx_hash)
 
 
 def verify_escrow_create_tx(lease, found):
@@ -330,7 +299,11 @@ def register_wallet_escrow(lease, tx_hash):
 # ---- release: ACTIVE -> IN_SETTLEMENT ----
 
 def release(lease, party, reason):
-    """The tenant or landlord releases the escrow into the settlement account, before the automatic return date."""
+    """The tenant or landlord releases the escrow into the settlement account, before the automatic return date.
+
+    The platform's bot account submits the EscrowFinish (the ledger lets any account do it), so the
+    release secret never leaves the server. The deposit can only go to the 2-of-3 settlement account.
+    """
     if reason not in Lease.ReleaseReason.values:
         raise InvalidInput("The reason must be early_move_out or damage_claim.", "bad_reason")
     with _exclusive(lease):
@@ -339,10 +312,10 @@ def release(lease, party, reason):
         role = lease.role_of(party)
         if role not in ("tenant", "landlord"):
             raise InvalidTransition("Only the tenant or the landlord can release the deposit.", "not_allowed")
-        wallet = wallet_for(party)
         try:
             tx_hash = services.finish_escrow(
-                wallet, lease.escrow_owner, lease.escrow_sequence, lease.condition_hex, lease.fulfillment_hex, lease.cancel_after
+                platform_wallet("bot"), lease.escrow_owner, lease.escrow_sequence, lease.condition_hex,
+                lease.fulfillment_hex, lease.cancel_after,
             )
         except LedgerError as exc:
             if exc.engine_result == "escrow_expired":
@@ -352,51 +325,12 @@ def release(lease, party, reason):
     return lease
 
 
-def verify_escrow_finish_tx(lease, party, found):
-    """Check a wallet-submitted transaction is this party's release of this lease's escrow. -> list of problems."""
-    if found is None:
-        return ["the network doesn't know this transaction yet (wait a few seconds and try again)"]
-    if not found.get("validated"):
-        return ["the transaction isn't in a validated ledger yet (wait a few seconds and try again)"]
-    if found.get("result") != "tesSUCCESS":
-        return [f"the transaction failed on the ledger ({found.get('result')})"]
-    tx = found.get("tx") or {}
-    if tx.get("TransactionType") != "EscrowFinish":
-        return ["it is not an escrow release"]
-    problems = []
-    if tx.get("Owner") != lease.escrow_owner or tx.get("OfferSequence") != lease.escrow_sequence:
-        problems.append("it releases a different escrow")
-    if tx.get("Account") != party.address:
-        problems.append("it wasn't sent from your wallet")
-    return problems
-
-
-def register_wallet_release(lease, party, reason, tx_hash):
-    """Wallet mode: accept an EscrowFinish the tenant or landlord signed in their own wallet, after checking it."""
-    if reason not in Lease.ReleaseReason.values:
-        raise InvalidInput("The reason must be early_move_out or damage_claim.", "bad_reason")
-    tx_hash = str(tx_hash or "").strip().upper()
-    if not re.fullmatch(r"[0-9A-F]{64}", tx_hash):
-        raise InvalidInput("That doesn't look like a transaction hash.", "bad_tx_hash")
-    with _exclusive(lease):
-        lease.refresh_from_db()
-        _require_status(lease, S.ACTIVE, "release the deposit")
-        role = lease.role_of(party)
-        if role not in ("tenant", "landlord"):
-            raise InvalidTransition("Only the tenant or the landlord can release the deposit.", "not_allowed")
-        problems = verify_escrow_finish_tx(lease, party, services.get_transaction(tx_hash))
-        if problems:
-            raise InvalidInput("This transaction can't be accepted as the release: " + "; ".join(problems) + ".", "release_mismatch")
-        _after_release(lease, party, role, reason, tx_hash)
-    return lease
-
-
 def _after_release(lease, party, role, reason, tx_hash):
     if _advance(lease, S.ACTIVE, S.IN_SETTLEMENT, release_reason=reason):
         what = "moved out early" if reason == Lease.ReleaseReason.EARLY_MOVE_OUT else "claimed damage"
         record(
             lease, "released",
-            f"{party.display_name} ({role}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
+            f"{party.label} ({role}) {what}: deposit moved to the 2-of-3 settlement account", tx_hash,
         )
     if reason == Lease.ReleaseReason.EARLY_MOVE_OUT:
         try:
@@ -442,28 +376,40 @@ def _propose(lease, party, tenant_amount, landlord_amount, reason):
             "payout_sum_mismatch",
         )
     prepared = services.prepare_payout_txs(lease.settlement_address, _payouts(lease, tenant_amount, landlord_amount), code, issuer)
-    # A party using their own browser wallet can propose, but can't approve: the wallet can't multisign.
-    signatures = {str(party.pk): [services.sign_prepared(tx, wallet_for(party)) for tx in prepared]} if party.seed else {}
-
     for old in open_proposals:
         old.status = SettlementProposal.Status.SUPERSEDED
         old.save(update_fields=["status"])
     proposal = SettlementProposal.objects.create(
         lease=lease, tenant_amount=tenant_amount, landlord_amount=landlord_amount, reason=reason,
-        proposed_by=party, prepared_txs=prepared, signatures=signatures,
+        proposed_by=party, prepared_txs=prepared, signatures={},
     )
     record(
         lease, "proposed",
-        f"{party.display_name} proposed a split: {money(lease, tenant_amount)} to the tenant, "
-        f"{money(lease, landlord_amount)} to the landlord ({len(signatures)} of {QUORUM} approvals)",
+        f"{party.label} proposed a split: {money(lease, tenant_amount)} to the tenant, "
+        f"{money(lease, landlord_amount)} to the landlord (needs {QUORUM} approvals)",
     )
     return proposal
 
 
-def sign(proposal, party):
-    """Approve a proposal. The second different approval pays the deposit out and settles the lease.
+def complete_signers(proposal):
+    """Party ids (strings) that signed every prepared payout."""
+    return [key for key, signed in proposal.signatures.items() if signed and len(signed) == len(proposal.prepared_txs) and all(signed)]
 
-    If a payout failed after both approvals were in, either signer can call this again to retry it.
+
+def next_unsigned_index(proposal, party):
+    """The first prepared payout this party hasn't signed yet, or None."""
+    mine = proposal.signatures.get(str(party.pk)) or []
+    for index in range(len(proposal.prepared_txs)):
+        if index >= len(mine) or not mine[index]:
+            return index
+    return None
+
+
+def add_signature(proposal, party, index, blob_hex):
+    """Store one party's Xaman multisignature for one prepared payout.
+
+    The blob is checked (right signer, own key, exactly this transaction) before it is stored.
+    When two parties have signed every payout, the payouts are submitted and the lease settles.
     """
     lease = proposal.lease
     with _exclusive(lease):
@@ -472,37 +418,47 @@ def sign(proposal, party):
         if proposal.status != SettlementProposal.Status.OPEN:
             raise InvalidTransition("This proposal is no longer open.", "proposal_closed")
         _require_status(lease, S.IN_SETTLEMENT, "approve a split")
-        if lease.role_of(party) is None:
+        role = lease.role_of(party)
+        if role is None:
             raise InvalidTransition("Only the tenant, landlord or arbiter of this lease can approve a split.", "not_allowed")
+        if not isinstance(index, int) or not 0 <= index < len(proposal.prepared_txs):
+            raise InvalidInput("That payout doesn't belong to this proposal.", "bad_index")
+        if len(complete_signers(proposal)) >= QUORUM:
+            raise InvalidTransition("This split already has its approvals.", "already_approved")
+        signed = services.verify_multisig_blob(proposal.prepared_txs[index], blob_hex, party.address)
         key = str(party.pk)
-        if key in proposal.signatures:
-            if len(proposal.signatures) < QUORUM:
-                raise InvalidTransition(
-                    "You've already approved this split. It needs one more approval from another party.", "already_signed"
-                )
-        else:
-            wallet = wallet_for(party)
-            signed = [services.sign_prepared(tx, wallet) for tx in proposal.prepared_txs]
-            proposal.signatures = {**proposal.signatures, key: signed}
-            proposal.save(update_fields=["signatures"])
-            record(
-                lease, "signed",
-                f"{party.display_name} ({lease.role_of(party)}) approved the split "
-                f"({min(len(proposal.signatures), QUORUM)} of {QUORUM} approvals)",
-            )
-        if len(proposal.signatures) >= QUORUM:
+        mine = list(proposal.signatures.get(key) or [None] * len(proposal.prepared_txs))
+        mine[index] = signed
+        proposal.signatures = {**proposal.signatures, key: mine}
+        proposal.save(update_fields=["signatures"])
+        if all(mine):
+            record(lease, "signed", f"{party.label} ({role}) approved the split ({min(len(complete_signers(proposal)), QUORUM)} of {QUORUM} approvals)")
+        if len(complete_signers(proposal)) >= QUORUM:
             _execute(proposal, lease)
     return proposal
 
 
+def retry_payout(proposal, party):
+    """Submit the remaining payouts again after a failure (both approvals are already in)."""
+    lease = proposal.lease
+    with _exclusive(lease):
+        lease.refresh_from_db()
+        proposal.refresh_from_db()
+        if proposal.status != SettlementProposal.Status.OPEN or len(complete_signers(proposal)) < QUORUM:
+            raise InvalidTransition("There is no approved payout to retry.", "nothing_to_retry")
+        if lease.role_of(party) is None:
+            raise InvalidTransition("Only the parties of this lease can retry the payout.", "not_allowed")
+        _execute(proposal, lease)
+    return proposal
+
+
 def _execute(proposal, lease):
-    """Submit the prepared payouts in order. Expired ones are prepared and signed again, once."""
+    """Submit the prepared payouts in order. Expired ones are prepared again and need new approvals."""
     try:
-        try:
-            _submit_remaining(proposal, lease)
-        except ExpiredPreparedTx:
-            _prepare_again(proposal, lease)
-            _submit_remaining(proposal, lease)
+        _submit_remaining(proposal, lease)
+    except ExpiredPreparedTx:
+        _prepare_again(proposal, lease)
+        return
     finally:
         cache.delete(live_cache_key(lease.pk))
     proposal.status = SettlementProposal.Status.EXECUTED
@@ -516,10 +472,11 @@ def _execute(proposal, lease):
 
 
 def _submit_remaining(proposal, lease):
-    names = {lease.tenant.address: f"{lease.tenant.display_name} (tenant)", lease.landlord.address: f"{lease.landlord.display_name} (landlord)"}
+    names = {lease.tenant.address: f"{lease.tenant.label} (tenant)", lease.landlord.address: f"{lease.landlord.label} (landlord)"}
+    signers = complete_signers(proposal)
     for index in range(len(proposal.executed_hashes), len(proposal.prepared_txs)):
         tx = proposal.prepared_txs[index]
-        signed = [signatures[index] for signatures in proposal.signatures.values()]
+        signed = [proposal.signatures[key][index] for key in signers]
         tx_hash = services.execute_multisigned(tx, signed)
         # Saved after every payout, so a retry never pays the same one twice.
         proposal.executed_hashes = [*proposal.executed_hashes, tx_hash]
@@ -529,22 +486,14 @@ def _submit_remaining(proposal, lease):
 
 
 def _prepare_again(proposal, lease):
-    """The prepared payouts expired: rebuild the unpaid ones and re-sign with the stored demo keys."""
+    """The prepared payouts expired before both approvals arrived: rebuild the unpaid ones; approvals start over."""
     done = len(proposal.executed_hashes)
-    signers = list(Party.objects.filter(pk__in=[int(k) for k in proposal.signatures]))
-    if any(not p.seed for p in signers):
-        proposal.status = SettlementProposal.Status.EXPIRED
-        proposal.save(update_fields=["status"])
-        raise InvalidTransition("The approvals expired before the payout went through. Propose the split again.", "proposal_expired")
     remaining = _payouts(lease, proposal.tenant_amount, proposal.landlord_amount)[done:]
     fresh = services.prepare_payout_txs(lease.settlement_address, remaining, lease.currency.code, lease.currency.issuer_address)
     proposal.prepared_txs = proposal.prepared_txs[:done] + fresh
-    proposal.signatures = {
-        str(p.pk): proposal.signatures[str(p.pk)][:done] + [services.sign_prepared(tx, Wallet.from_seed(p.seed)) for tx in fresh]
-        for p in signers
-    }
+    proposal.signatures = {key: list(signed[:done]) + [None] * len(fresh) for key, signed in proposal.signatures.items()}
     proposal.save(update_fields=["prepared_txs", "signatures"])
-    log.info("proposal %s: payouts had expired and were prepared and signed again", proposal.pk)
+    record(lease, "approvals_expired", "The approvals expired before the payout went through. Approve the split again.")
 
 
 # ---- evidence: a photo's SHA-256 anchored in a public memo ----
@@ -563,17 +512,9 @@ def _mark_anchored(item, tx_hash):
     if changed:
         record(
             item.lease, "evidence_anchored",
-            f"{item.uploaded_by.display_name} anchored a {item.get_kind_display().lower()} photo's fingerprint on the ledger", tx_hash,
+            f"{item.uploaded_by.label} anchored a {item.get_kind_display().lower()} photo's fingerprint on the ledger", tx_hash,
         )
     return item
-
-
-def anchor_evidence_demo(item):
-    """Demo mode: the uploader's server-held wallet writes the photo's hash to the ledger."""
-    if item.anchor_tx_hash:
-        return item
-    tx_hash = services.anchor_memo(wallet_for(item.uploaded_by), EVIDENCE_MEMO_TYPE, evidence_memo(item))
-    return _mark_anchored(item, tx_hash)
 
 
 def register_wallet_anchor(item, tx_hash):
@@ -596,24 +537,35 @@ def register_wallet_anchor(item, tx_hash):
     return _mark_anchored(item, tx_hash)
 
 
-# ---- the bot: ACTIVE -> RETURNED ----
+# ---- cancel, and the bot: ACTIVE -> RETURNED ----
+
+CANCELLABLE = (S.PENDING_ACCEPTANCE, S.DRAFT, S.SETTLEMENT_READY)
+
+
+def cancel(lease, message, kind="cancelled"):
+    """Close an agreement before the deposit is locked. -> True when this call cancelled it."""
+    for status in CANCELLABLE:
+        if _advance(lease, status, S.CANCELLED, error=message):
+            record(lease, kind, message)
+            return True
+    return False
 
 def bot_pass():
     """Return every deposit whose automatic return date (+10 s) has passed on the ledger.
 
-    -> list of {'lease_id', 'action', ...}. Archived leases are included: hiding a lease from the
-    lists must never leave a tenant's money locked.
+    -> list of {'lease_id', 'action', ...}.
     """
     related = ("tenant", "landlord", "arbiter", "currency")
+    pending = Lease.objects.filter(status=S.PENDING_ACCEPTANCE).select_related(*related)
     active = Lease.objects.filter(status=S.ACTIVE, escrow_sequence__isnull=False).select_related(*related)
     unlocked = Lease.objects.filter(status=S.SETTLEMENT_READY).select_related(*related)
-    if not active.exists() and not unlocked.exists():
+    if not pending.exists() and not active.exists() and not unlocked.exists():
         return []
     now = services.ledger_close_time()
     due = lambda lease: now > lease.cancel_after + services.CANCEL_SAFETY  # noqa: E731
     results = []
     # Both lists are read before anything changes, so a lease is handled once per pass.
-    for step, leases in ((_expire_unlocked, list(unlocked)), (_return_or_reconcile, list(active))):
+    for step, leases in ((_expire_pending, list(pending)), (_expire_unlocked, list(unlocked)), (_return_or_reconcile, list(active))):
         for lease in [lease for lease in leases if due(lease)]:
             try:
                 with _exclusive(lease):
@@ -625,6 +577,12 @@ def bot_pass():
                 log.exception("bot: lease %s failed", lease.pk)
                 results.append({"lease_id": str(lease.pk), "action": "error", "error": "Unexpected error; see the server log."})
     return results
+
+
+def _expire_pending(lease):
+    """An agreement nobody finished accepting before its return date can never start."""
+    message = "Not everyone accepted before the automatic return date, so this agreement can no longer start."
+    return {"action": "cancelled_pending" if cancel(lease, message, "expired") else "skipped"}
 
 
 def _expire_unlocked(lease):
@@ -654,7 +612,7 @@ def _return_or_reconcile(lease):
             raise
         return _reconcile(lease)
     if _advance(lease, S.ACTIVE, S.RETURNED):
-        record(lease, "returned", f"Deposit returned to {lease.tenant.display_name} automatically", tx_hash)
+        record(lease, "returned", f"Deposit returned to {lease.tenant.label} automatically", tx_hash)
     return {"action": "returned", "tx_hash": tx_hash}
 
 
@@ -666,7 +624,7 @@ def _reconcile(lease):
             record(lease, "released", "Deposit was released to the settlement account (detected on the ledger)")
         return {"action": "reconciled_in_settlement"}
     if _advance(lease, S.ACTIVE, S.RETURNED):
-        record(lease, "returned", f"Deposit was returned to {lease.tenant.display_name} (detected on the ledger)")
+        record(lease, "returned", f"Deposit was returned to {lease.tenant.label} (detected on the ledger)")
     return {"action": "reconciled_returned"}
 
 
@@ -677,14 +635,23 @@ def open_proposal(lease):
 
 
 def allowed_actions(lease, party, now=None):
-    """Action names for the UI (vocabulary: lock_deposit, release_early, claim_damage, propose,
-    sign:<proposal_id>, upload_evidence, share_verify). The API enforces the same list."""
+    """Action names for the UI. The API enforces the same list."""
     role = lease.role_of(party)
     if role is None:
         return []
     actions = []
+    if lease.status == S.PENDING_ACCEPTANCE:
+        if role in ("tenant", "landlord"):
+            actions.append("change_arbiter")
+            if lease.arbiter_id and not getattr(lease, f"{role}_approved_arbiter"):
+                actions.append("approve_arbiter")
+        if lease.created_by_id == party.pk:
+            actions.append("cancel")
+        return actions
+    if lease.status == S.SETTLEMENT_READY and lease.created_by_id == party.pk:
+        actions.append("cancel")
     if lease.status == S.SETTLEMENT_READY and role == "tenant":
-        actions.append("lock_deposit")
+        actions.insert(0, "lock_deposit")
     if lease.status == S.ACTIVE and (now or ledger_now()) < lease.cancel_after:
         if role == "tenant":
             actions.append("release_early")
@@ -694,9 +661,11 @@ def allowed_actions(lease, party, now=None):
         proposal = open_proposal(lease)
         if proposal is None or not proposal.executed_hashes:
             actions.append("propose")
-        may_sign = bool(party.seed) or len(proposal.signatures) >= QUORUM if proposal is not None else False
-        if may_sign and (str(party.pk) not in proposal.signatures or len(proposal.signatures) >= QUORUM):
-            actions.append(f"sign:{proposal.pk}")
+        if proposal is not None:
+            if len(complete_signers(proposal)) >= QUORUM:
+                actions.append(f"retry:{proposal.pk}")
+            elif next_unsigned_index(proposal, party) is not None:
+                actions.append(f"sign:{proposal.pk}")
     if role in ("tenant", "landlord") and lease.status in (S.SETTLEMENT_READY, S.ACTIVE, S.IN_SETTLEMENT):
         actions.append("upload_evidence")
     if lease.escrow_sequence is not None:

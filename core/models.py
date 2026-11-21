@@ -1,8 +1,9 @@
-"""Models: platform wallets, demo personas, test currencies, leases and their timeline.
+"""Models: platform wallets, accounts, test currencies, leases, invites, Xaman requests and the timeline.
 
-Seeds are stored in the database ONLY because this app runs on XRPL Testnet/Devnet
-(ledger/client.py refuses to start against mainnet).
+Only PLATFORM wallets keep seeds here (Testnet/Devnet only; ledger/client.py refuses mainnet).
+Users sign with their own Xaman wallet; the server never holds their keys.
 """
+import secrets
 import uuid
 from datetime import timedelta
 
@@ -17,7 +18,6 @@ class PlatformWallet(models.Model):
         BOT = "bot", "Bot"
         ISSUER_EUR = "issuer_eur", "EUR issuer"
         ISSUER_USD = "issuer_usd", "USD issuer"
-        CREDENTIAL_ISSUER = "credential_issuer", "Credential issuer"
 
     role = models.CharField(max_length=32, choices=Role.choices, unique=True)
     address = models.CharField(max_length=64, unique=True)
@@ -28,27 +28,22 @@ class PlatformWallet(models.Model):
 
 
 class Party(models.Model):
-    class Role(models.TextChoices):
-        TENANT = "tenant", "Tenant"
-        LANDLORD = "landlord", "Landlord"
-        ARBITER = "arbiter", "Arbiter"
+    """An account: one XRPL address, signed in with Xaman. Its role comes from each lease."""
 
-    class WalletType(models.TextChoices):
-        DEMO = "demo", "Demo (server-held Testnet key)"
-        GEMWALLET = "gemwallet", "GemWallet"
-        CROSSMARK = "crossmark", "Crossmark"
-
-    display_name = models.CharField(max_length=120)
-    role = models.CharField(max_length=16, choices=Role.choices)
     address = models.CharField(max_length=64, unique=True)
-    seed = models.CharField(max_length=64, null=True, blank=True, help_text="Null for external wallets.")
-    wallet_type = models.CharField(max_length=16, choices=WalletType.choices, default=WalletType.DEMO)
+    display_name = models.CharField(max_length=80, blank=True, help_text="Shown to the other parties. Never sent to the ledger.")
+    xaman_user_token = models.CharField(max_length=80, blank=True, help_text="Lets later sign requests arrive as push notifications.")
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         verbose_name_plural = "parties"
 
+    @property
+    def label(self):
+        return self.display_name or f"{self.address[:6]}…{self.address[-4:]}"
+
     def __str__(self):
-        return f"{self.display_name} ({self.get_role_display()})"
+        return self.label
 
 
 class Currency(models.Model):
@@ -63,12 +58,9 @@ class Currency(models.Model):
         return self.label
 
 
-# --------------------------------------------------------------------------------------
-# Patch 3: leases, settlement proposals, evidence and the ledger timeline
-# --------------------------------------------------------------------------------------
-
 class Lease(models.Model):
     class Status(models.TextChoices):
+        PENDING_ACCEPTANCE = "PENDING_ACCEPTANCE", "Waiting for acceptance"
         DRAFT = "DRAFT", "Being set up"
         SETTLEMENT_READY = "SETTLEMENT_READY", "Ready to lock"
         ACTIVE = "ACTIVE", "Locked"
@@ -76,19 +68,23 @@ class Lease(models.Model):
         IN_SETTLEMENT = "IN_SETTLEMENT", "In settlement"
         SETTLED = "SETTLED", "Settled"
         FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
 
     class ReleaseReason(models.TextChoices):
         EARLY_MOVE_OUT = "early_move_out", "Early move-out"
         DAMAGE_CLAIM = "damage_claim", "Damage claim"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    tenant = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_tenant")
-    landlord = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_landlord")
-    arbiter = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_arbiter")
+    tenant = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_tenant", null=True, blank=True)
+    landlord = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_landlord", null=True, blank=True)
+    arbiter = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_as_arbiter", null=True, blank=True)
+    created_by = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="leases_created")
+    arbiter_accepted = models.BooleanField(default=False)
+    tenant_approved_arbiter = models.BooleanField(default=False)
+    landlord_approved_arbiter = models.BooleanField(default=False)
     currency = models.ForeignKey(Currency, on_delete=models.PROTECT)
     amount = models.DecimalField(max_digits=20, decimal_places=6)
     title = models.CharField(max_length=120, blank=True, help_text="A label such as the property name. Never sent to the ledger.")
-    scenario = models.CharField(max_length=1, blank=True, help_text="A, B or C for leases staged by demo_scenarios.")
     end_at = models.DateTimeField()
     grace_minutes = models.PositiveIntegerField(default=1)
     cancel_after = models.DateTimeField(help_text="end_at + grace: from then on the deposit returns to the tenant.")
@@ -100,11 +96,10 @@ class Lease(models.Model):
     escrow_owner = models.CharField(max_length=64, blank=True)
     escrow_sequence = models.BigIntegerField(null=True, blank=True)
 
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.DRAFT, db_index=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING_ACCEPTANCE, db_index=True)
     setup_step = models.CharField(max_length=20, blank=True)
     release_reason = models.CharField(max_length=20, choices=ReleaseReason.choices, blank=True)
     error = models.TextField(blank=True)
-    archived = models.BooleanField(default=False, help_text="Hidden from lists (demo_reset). The ledger is untouched.")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -123,7 +118,7 @@ class Lease(models.Model):
         super().save(*args, **kwargs)
 
     def signers(self):
-        """The three parties whose signatures count, in a fixed order."""
+        """The three parties whose signatures count, in a fixed order (all set once setup starts)."""
         return [self.tenant, self.landlord, self.arbiter]
 
     def role_of(self, party):
@@ -134,6 +129,29 @@ class Lease(models.Model):
             if getattr(self, f"{role}_id") == party.pk:
                 return role
         return None
+
+
+def new_invite_token():
+    return secrets.token_urlsafe(32)
+
+
+class Invite(models.Model):
+    class Role(models.TextChoices):
+        TENANT = "tenant", "Tenant"
+        LANDLORD = "landlord", "Landlord"
+        ARBITER = "arbiter", "Arbiter"
+
+    lease = models.ForeignKey(Lease, on_delete=models.CASCADE, related_name="invites")
+    role = models.CharField(max_length=10, choices=Role.choices)
+    token = models.CharField(max_length=64, unique=True, default=new_invite_token)
+    accepted_by = models.ForeignKey(Party, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    declined_at = models.DateTimeField(null=True, blank=True)
+    revoked = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
 
 
 class SettlementProposal(models.Model):
@@ -150,7 +168,7 @@ class SettlementProposal(models.Model):
     proposed_by = models.ForeignKey(Party, on_delete=models.PROTECT, related_name="proposals")
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.OPEN)
     prepared_txs = models.JSONField(default=list, help_text="Unsigned payout transactions, in submit order.")
-    signatures = models.JSONField(default=dict, help_text="{party_id: [signed tx JSON per prepared tx]}")
+    signatures = models.JSONField(default=dict, help_text="{party_id: [signed tx JSON or null, one per prepared tx]}")
     executed_hashes = models.JSONField(default=list)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -194,3 +212,49 @@ class LedgerEvent(models.Model):
 
     def __str__(self):
         return self.summary
+
+
+class XamanRequest(models.Model):
+    """One Xaman sign request. The browser only sees our id, the QR code and the deep link."""
+
+    class Purpose(models.TextChoices):
+        SIGNIN = "signin", "Sign in"
+        ESCROW_CREATE = "escrow_create", "Lock the deposit"
+        PAYOUT_SIGN = "payout_sign", "Approve a payout"
+        EVIDENCE_ANCHOR = "evidence_anchor", "Anchor a photo"
+        TRUSTSET = "trustset", "Add a trust line"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Waiting for Xaman"
+        SIGNED = "signed", "Signed, finishing"
+        DONE = "done", "Done"
+        REJECTED = "rejected", "Rejected in Xaman"
+        EXPIRED = "expired", "Expired"
+        FAILED = "failed", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    xaman_uuid = models.CharField(max_length=64, unique=True)
+    purpose = models.CharField(max_length=20, choices=Purpose.choices)
+    party = models.ForeignKey(Party, on_delete=models.CASCADE, null=True, blank=True, related_name="xaman_requests")
+    lease = models.ForeignKey(Lease, on_delete=models.CASCADE, null=True, blank=True)
+    proposal = models.ForeignKey(SettlementProposal, on_delete=models.CASCADE, null=True, blank=True)
+    evidence = models.ForeignKey(Evidence, on_delete=models.CASCADE, null=True, blank=True)
+    payload_index = models.PositiveIntegerField(null=True, blank=True, help_text="Which prepared payout (payout_sign).")
+    currency_code = models.CharField(max_length=3, blank=True, help_text="Trust line currency (trustset).")
+    deeplink = models.URLField(max_length=300, blank=True)
+    pushed = models.BooleanField(default=False)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.OPEN)
+    error = models.CharField(max_length=300, blank=True)
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
+class FaucetGrant(models.Model):
+    """One use of the Testnet faucet, for the once-per-24-hours limit."""
+
+    party = models.ForeignKey(Party, on_delete=models.CASCADE, related_name="faucet_grants")
+    kind = models.CharField(max_length=16, help_text="activate | tokens:EUR | tokens:USD")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)

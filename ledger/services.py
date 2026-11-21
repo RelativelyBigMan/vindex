@@ -19,8 +19,6 @@ from xrpl.models.requests.ledger_entry import Escrow as EscrowLocator
 from xrpl.models.transactions import (
     AccountSet,
     AccountSetAsfFlag,
-    CredentialAccept,
-    CredentialCreate,
     EscrowCancel,
     EscrowCreate,
     EscrowFinish,
@@ -766,68 +764,6 @@ def read_memo(tx_json, memo_type):
             except ValueError:
                 return None
     return None
-
-
-# ---- credentials (the verified arbiter) ----
-
-LSF_CREDENTIAL_ACCEPTED = 0x00010000
-
-
-def _hex(text):
-    return text.encode("utf-8").hex().upper()
-
-
-def _text(hex_value):
-    try:
-        return bytes.fromhex(hex_value or "").decode("utf-8")
-    except ValueError:
-        return hex_value or ""
-
-
-def get_credentials(address, client=None):
-    """Credentials where `address` is the subject. -> [{'issuer', 'type', 'type_hex', 'uri', 'accepted'}]
-
-    'accepted' is the ledger's lsfAccepted flag: only then does the credential count.
-    """
-    found, marker = [], None
-    while True:
-        try:
-            result = _request(
-                AccountObjects(account=address, type=AccountObjectType.CREDENTIAL, ledger_index="validated", marker=marker),
-                client,
-            )
-        except LedgerError as exc:
-            if exc.engine_result == "actNotFound":
-                return []
-            raise
-        for node in result.get("account_objects", []):
-            if node.get("Subject") != address:
-                continue  # the same list also holds credentials this account issued
-            found.append({
-                "issuer": node.get("Issuer"),
-                "type": _text(node.get("CredentialType")),
-                "type_hex": node.get("CredentialType"),
-                "uri": _text(node.get("URI")),
-                "accepted": bool(int(node.get("Flags", 0)) & LSF_CREDENTIAL_ACCEPTED),
-            })
-        marker = result.get("marker")
-        if not marker:
-            return found
-
-
-def issue_credential(issuer_wallet, subject_address, credential_type, uri=None):
-    """CredentialCreate from the issuer to the subject. -> tx_hash (the subject still has to accept)."""
-    tx = CredentialCreate(
-        account=issuer_wallet.address, subject=subject_address, credential_type=_hex(credential_type),
-        uri=_hex(uri) if uri else None,
-    )
-    return submit(tx, issuer_wallet)["hash"]
-
-
-def accept_credential(subject_wallet, issuer_address, credential_type):
-    """CredentialAccept by the subject. -> tx_hash"""
-    tx = CredentialAccept(account=subject_wallet.address, issuer=issuer_address, credential_type=_hex(credential_type))
-    return submit(tx, subject_wallet)["hash"]
 
 
 # ---- raw ledger view of an account (the settlement inspector) ----
