@@ -5,7 +5,8 @@ B  early move-out:  settlement account -> escrow -> tenant releases -> 1,000 bac
 C  damage dispute:  settlement account -> escrow -> landlord releases -> 850 / 150 (landlord + arbiter sign)
 
 Scenario A is started first; B and C run while A waits for its deadline.
-Each run costs the tenant 150 tokens (scenario C); bootstrap_demo tops the tenant back up.
+Ledger-level test: it drives ledger/services.py directly with throw-away tenant, landlord and arbiter wallets
+(funded from the treasury, with trust lines and test tokens). No Xaman, no database rows besides the platform wallets.
 """
 import time
 from datetime import timedelta
@@ -15,7 +16,7 @@ from django.core.management.base import BaseCommand, CommandError
 from xrpl.models.transactions import Payment
 from xrpl.wallet import Wallet, generate_faucet_wallet
 
-from core.models import Currency, Party, PlatformWallet
+from core.models import Currency, PlatformWallet
 from ledger import services
 from ledger.client import explorer_account, explorer_tx, network
 from ledger.conditions import make_condition
@@ -25,6 +26,7 @@ DEPOSIT = Decimal("1000")
 LEASE = timedelta(minutes=1)
 GRACE = timedelta(minutes=1)
 TREASURY_KEEP = Decimal("3")
+WALLET_XRP = Decimal("15")  # per throw-away wallet
 
 
 class CheckFailed(Exception):
@@ -36,7 +38,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--currency", choices=["EUR", "USD"], default="EUR")
-        parser.add_argument("--scenario", choices=["A", "B", "C", "all"], default="all")
+        parser.add_argument("--scenario", choices=["a", "b", "c", "all"], default="all", type=str.lower)
 
     # ---- output helpers ----
     def say(self, tag, text, tx=None):
@@ -54,22 +56,22 @@ class Command(BaseCommand):
     # ---- setup ----
     def handle(self, *args, **options):
         self.code = options["currency"]
-        wanted = ["A", "B", "C"] if options["scenario"] == "all" else [options["scenario"]]
+        wanted = ["A", "B", "C"] if options["scenario"] == "all" else [options["scenario"].upper()]
         try:
             currency = Currency.objects.get(code=self.code)
             self.issuer = currency.issuer_address
-            self.parties = {r: Party.objects.get(role=r, wallet_type="demo") for r in ("tenant", "landlord", "arbiter")}
-            self.wallets = {r: Wallet.from_seed(p.seed) for r, p in self.parties.items()}
             self.treasury = Wallet.from_seed(PlatformWallet.objects.get(role="treasury").seed)
             self.bot = Wallet.from_seed(PlatformWallet.objects.get(role="bot").seed)
-        except (Currency.DoesNotExist, Party.DoesNotExist, PlatformWallet.DoesNotExist) as exc:
-            raise CommandError(f"Demo data is missing ({exc}). Run bootstrap_demo first.") from exc
+            self.issuer_wallet = Wallet.from_seed(PlatformWallet.objects.get(role=f"issuer_{self.code.lower()}").seed)
+        except (Currency.DoesNotExist, PlatformWallet.DoesNotExist) as exc:
+            raise CommandError(f"Platform data is missing ({exc}). Run bootstrap first.") from exc
+        self.wallets = {r: Wallet.create() for r in ("tenant", "landlord", "arbiter")}
         self.signers = [self.wallets[r].address for r in ("tenant", "landlord", "arbiter")]
 
         net = network()
         self.stdout.write(f"Network: {net['name']} | currency: {currency.label} | deposit: {DEPOSIT} | scenarios: {', '.join(wanted)}")
-        for role, party in self.parties.items():
-            self.stdout.write(f"  {role:<9} {party.display_name:<24} {explorer_account(party.address)}")
+        for role, wallet in self.wallets.items():
+            self.stdout.write(f"  {role:<9} (throw-away) {explorer_account(wallet.address)}")
 
         self.results = {}
         try:
@@ -124,7 +126,7 @@ class Command(BaseCommand):
         self.say(tag, self.style.ERROR("FAILED ") + f"{name}: it was not refused")
 
     def ensure_funds(self, count):
-        need_xrp = services.SETTLEMENT_FUND_XRP * count + TREASURY_KEEP
+        need_xrp = WALLET_XRP * 3 + services.SETTLEMENT_FUND_XRP * count + TREASURY_KEEP
         for _ in range(4):
             have = services.get_balances(self.treasury.address)["XRP"]
             if have >= need_xrp:
@@ -137,9 +139,15 @@ class Command(BaseCommand):
                 time.sleep(10)
         else:
             raise CheckFailed("the treasury is short of XRP and the faucet didn't help; wait a few minutes and rerun")
+        for role in ("tenant", "landlord", "arbiter"):
+            services.fund_xrp(self.treasury, self.wallets[role].address, WALLET_XRP)
+        for role in ("tenant", "landlord"):
+            services.ensure_trust_line(self.wallets[role], self.code, self.issuer)
+        services.issue_tokens(self.issuer_wallet, self.wallets["tenant"].address, self.code, DEPOSIT * count)
         have = self.token(self.wallets["tenant"].address)
         if have < DEPOSIT * count:
-            raise CheckFailed(f"the tenant holds {have} {self.code} but needs {DEPOSIT * count}; rerun bootstrap_demo to top up")
+            raise CheckFailed(f"the tenant holds {have} {self.code} but needs {DEPOSIT * count}")
+        self.stdout.write(f"  throw-away wallets funded ({WALLET_XRP} XRP each); tenant holds {have} {self.code}")
 
     # ---- shared steps ----
     def open_deposit(self, tag):
