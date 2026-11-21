@@ -10,12 +10,12 @@ from django.utils import timezone
 from xrpl.utils import datetime_to_ripple_time
 from xrpl.wallet import Wallet
 
-from ledger import services
+from ledger import services, xaman
 from ledger.errors import ExpiredPreparedTx, LedgerError
 
 from . import lifecycle
 from .lifecycle import InvalidInput, InvalidTransition
-from .models import Currency, Invite, Lease, Party, PlatformWallet
+from .models import Currency, Invite, Lease, Party, PlatformWallet, XamanRequest
 
 S = Lease.Status
 MOCKED = [
@@ -652,3 +652,90 @@ class AgreementTests(LedgerMockedTestCase):
         with self.assertRaises(InvalidTransition) as ctx:
             agreements.approve_arbiter(lease, self.tenant)
         self.assertEqual(ctx.exception.code, "no_arbiter")
+
+
+class SigningTests(LedgerMockedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.payloads = []
+        create = mock.patch.object(xaman, "create_payload", side_effect=self._create)
+        self.get = mock.patch.object(xaman, "get_payload").start()
+        create.start()
+        self.addCleanup(mock.patch.stopall)
+        self.get.return_value = {"status": "open", "account": "", "hex": "", "txid": "", "user_token": ""}
+
+    def _create(self, txjson, **options):
+        self.payloads.append((txjson, options))
+        return {"uuid": f"x-{len(self.payloads)}", "deeplink": f"https://xumm.app/sign/x-{len(self.payloads)}", "pushed": False}
+
+    def signed(self, **reply):
+        self.get.return_value = {"status": "signed", "account": "", "hex": "", "txid": "", "user_token": "", **reply}
+
+    def test_signin_creates_the_account_and_stores_the_push_token(self):
+        from . import signing
+        req = signing.start_signin()
+        self.assertEqual(self.payloads[0], ({"TransactionType": "SignIn"}, {"submit": False, "instruction": "Sign in to safeDeposit"}))
+        self.assertEqual(signing.refresh(req).status, "open")
+        address = Wallet.create().address
+        self.signed(account=address, user_token="tok")
+        req = signing.refresh(req)
+        self.assertEqual(req.status, "done")
+        self.assertEqual((req.party.address, req.party.xaman_user_token), (address, "tok"))
+
+    def test_rejected_and_expired_requests_stop(self):
+        from . import signing
+        for status in ("rejected", "expired"):
+            req = signing.start_signin()
+            self.get.return_value = {"status": status, "account": "", "hex": "", "txid": "", "user_token": ""}
+            self.assertEqual(signing.refresh(req).status, status)
+
+    def test_escrow_request_is_for_the_tenant_and_registers_once_validated(self):
+        from . import signing
+        lease = self.make_lease(S.SETTLEMENT_READY)
+        self.ledger.build_escrow_create.return_value = {"TransactionType": "EscrowCreate", "Account": self.tenant.address,
+                                                       "Sequence": 5, "Fee": "12", "LastLedgerSequence": 9, "SigningPubKey": ""}
+        req = signing.start_escrow(lease, self.tenant)
+        txjson, options = self.payloads[0]
+        self.assertNotIn("Sequence", txjson)
+        self.assertEqual((options["submit"], options["signers"]), (True, [self.tenant.address]))
+        with self.assertRaises(InvalidTransition):
+            signing.start_escrow(lease, self.landlord)
+        self.signed(txid="AB" * 32)
+        self.ledger.get_transaction.return_value = None
+        self.assertEqual(signing.refresh(req).status, "signed")  # not validated yet: try again on the next poll
+        with mock.patch.object(lifecycle, "register_wallet_escrow") as register:
+            self.ledger.get_transaction.return_value = {"validated": True, "result": "tesSUCCESS", "tx": {}}
+            self.assertEqual(signing.refresh(req).status, "done")
+        register.assert_called_once_with(lease, "AB" * 32)
+
+    def test_payout_request_walks_through_each_prepared_payout(self):
+        from . import signing
+        lease = self.make_lease(S.IN_SETTLEMENT)
+        proposal = lifecycle.propose(lease, self.landlord, "850", "150")
+        req = signing.start_payout(proposal, self.landlord)
+        txjson, options = self.payloads[0]
+        self.assertEqual(txjson, proposal.prepared_txs[0])
+        self.assertEqual((options["submit"], options["multisign"], options["signers"]), (False, True, [self.landlord.address]))
+        self.signed(hex="BLOB0")
+        self.assertEqual(signing.refresh(req).status, "done")
+        req = signing.start_payout(proposal, self.landlord)
+        self.assertEqual(req.payload_index, 1)
+        self.signed(hex="BLOB1")
+        signing.refresh(req)
+        self.assertIsNone(signing.start_payout(proposal, self.landlord))
+
+    def test_a_failed_finish_is_reported_not_raised(self):
+        from . import signing
+        lease = self.make_lease(S.IN_SETTLEMENT)
+        proposal = lifecycle.propose(lease, self.landlord, "850", "150")
+        req = signing.start_payout(proposal, self.landlord)
+        self.ledger.verify_multisig_blob.side_effect = LedgerError("signature_mismatch", "Signed by someone else.")
+        self.signed(hex="BAD")
+        req = signing.refresh(req)
+        self.assertEqual((req.status, req.error), ("failed", "Signed by someone else."))
+
+    def test_present_never_includes_the_xaman_uuid(self):
+        from . import signing
+        data = signing.present(signing.start_signin())
+        self.assertEqual(set(data), {"request_id", "purpose", "status", "error", "qr", "deeplink", "pushed"})
+        self.assertTrue(data["qr"].startswith("data:image/svg+xml"))
