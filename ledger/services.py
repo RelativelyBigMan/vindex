@@ -734,7 +734,7 @@ def _memo(memo_type, data_dict):
 def anchor_memo(wallet, memo_type, data_dict):
     """Write one Memo to the ledger on an AccountSet that changes no flags. -> tx_hash
 
-    memo_type is text such as 'safedeposit/evidence'; data_dict is stored as compact JSON.
+    memo_type is text such as 'vindex/evidence'; data_dict is stored as compact JSON.
     Memos are PUBLIC and permanent: anchor hashes and ids only, never personal data.
     """
     return submit(AccountSet(account=wallet.address, memos=[_memo(memo_type, data_dict)]), wallet)["hash"]

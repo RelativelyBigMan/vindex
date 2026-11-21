@@ -78,7 +78,7 @@ function render(where, data) {
     checks.push(check(null, "The escrow no longer exists: the deposit was returned to the tenant or paid out by a 2-of-3 decision."));
   }
   if (root_) {
-    checks.push(check(Boolean(root_.Flags & LSF_DISABLE_MASTER), "The settlement account's own key is disabled: nobody, including safeDeposit, can spend from it alone."));
+    checks.push(check(Boolean(root_.Flags & LSF_DISABLE_MASTER), "The settlement account's own key is disabled: nobody, including Vindex, can spend from it alone."));
     checks.push(check(signerList?.SignerQuorum === 2 && signers.length === 3 && signers.every((s) => s.SignerWeight === 1),
       "Spending from it needs 2 of 3 signatures."));
     checks.push(check(signers.length === 3 && expected.every((address) => signers.some((s) => s.Account === address)),

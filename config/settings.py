@@ -1,4 +1,4 @@
-"""Django settings for safeDeposit (hackathon demo, XRPL Testnet only)."""
+"""Django settings for Vindex (hackathon demo, XRPL Testnet only)."""
 import os
 from pathlib import Path
 
@@ -77,7 +77,7 @@ DATABASES = {
     }
 }
 
-CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "safedeposit"}}
+CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "vindex"}}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

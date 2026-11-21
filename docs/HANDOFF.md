@@ -1,4 +1,4 @@
-# safeDeposit — handoff for a new AI session
+# Vindex — handoff for a new AI session
 
 Read this first, then `CLAUDE.md` (project rules). This file maps the code so you don't need to explore it file by file. State as of 2026-11-21, branch `real-accounts-testnet` (start your own branch from it).
 
@@ -88,7 +88,7 @@ docs/superpowers/         design spec and implementation plan for the Xaman migr
 - **Invite**: lease, role, url-safe token (single use), accepted_by / accepted_at / declined_at, revoked.
 - **SettlementProposal**: amounts, reason, proposed_by, status (OPEN, EXECUTED, SUPERSEDED, EXPIRED), `prepared_txs` (unsigned payouts with fixed Sequence/Fee/LastLedgerSequence), `signatures` = `{party_id: [signed tx JSON or null per prepared tx]}`, `executed_hashes`.
 - **XamanRequest**: our UUID (`id`, the only id the browser sees), `xaman_uuid`, `purpose` (signin, escrow_create, payout_sign, evidence_anchor, trustset), links to party/lease/proposal/evidence, `payload_index`, `currency_code`, `deeplink`, `pushed`, `status` (open → signed → finishing → done, or rejected / expired / failed), `signed_at`, `error`, `result`.
-- **FaucetGrant**: party, kind (`activate`, `tokens:EUR`, `tokens:USD`), created_at.
+- **FaucetGrant**: party, kind (`activate`), created_at.
 - **LedgerEvent**: one timeline line per on-ledger action, with tx hash. Every ledger action must write one.
 
 ## 6. Key flows (where the logic lives)
@@ -107,7 +107,7 @@ docs/superpowers/         design spec and implementation plan for the Xaman migr
 
 **Bot** (`run_bot` → `lifecycle.bot_pass` every 10 s) — cancels pending agreements past their return date, fails setups stuck in DRAFT for 10+ minutes, closes or adopts unlocked leases past their return date, returns escrows (EscrowCancel) after CancelAfter + 10 s, reconciles escrows that vanished, returns escrows locked after a cancellation, and cancels duplicate escrows of a lease.
 
-**Faucet** — `faucet.activate` (50 test XRP from treasury, only for accounts not on the ledger), TrustSet via Xaman (`signing.start_trustline`), `faucet.grant_tokens` (5,000 per currency, needs the trust line). Each once per 24 h per account.
+**Faucet** — `faucet.activate` (50 test XRP from treasury, only for accounts not on the ledger), TrustSet via Xaman (`signing.start_trustline`), activation once per 24 h per account. Test tokens are issued by an admin: `manage.py issue_test_tokens <address> <EUR|USD> [amount]`. **Every payout recipient needs the token's trust line**: `lifecycle.propose` refuses a split that pays someone without it (`no_trust_line`), and the lease page offers to add it.
 
 ## 7. API contract (JSON; CSRF header on every POST)
 
@@ -118,7 +118,7 @@ GET/POST /api/me/                         account or {"signed_in": false}; POST 
 POST /api/auth/signin/ | /api/auth/signout/
 GET  /api/xaman/requests/<id>/            {request_id, purpose, status, error, qr (data: URI), deeplink, pushed}
 POST /api/xaman/requests/<id>/cancel/     keeps a request the user already signed
-GET  /api/faucet/   POST /api/faucet/activate/ | trustline/ {currency} | tokens/ {currency}
+GET  /api/faucet/   POST /api/faucet/activate/ | trustline/ {currency}
 GET  /api/invites/<token>/                terms (reduced once used); POST .../accept/ {expected_arbiter} | .../decline/
 GET/POST /api/leases/                     list (?status=) | create {role, title, currency, amount, end_date | end_in_minutes, grace_minutes, arbiter_address}
 GET  /api/leases/<id>/                    full state: parties, open_roles, agreement, invites, settlement (live), escrow, proposals, events, evidence, actions

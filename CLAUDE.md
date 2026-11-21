@@ -1,9 +1,9 @@
-# safeDeposit — project context (read before every task)
+# Vindex — project context (read before every task)
 
 New to the codebase? Read `docs/HANDOFF.md` first: a map of every file, the flows, the API and known gaps.
 
 Adapted from "Cauzione — Fable build prompts (Django + JS)". Decisions taken on 2026-11-20 that differ from that doc:
-- The app is called **safeDeposit** (the doc's working name was Cauzione). Tagline: "Your deposit, returned by the ledger."
+- The app is called **Vindex** (the doc's working name was Cauzione). Tagline: "Your deposit, returned by the ledger."
 - **No Bootstrap, no CDNs.** The UI uses the existing "whitepaper" design in `static/css/global.css` and `templates/` (see README.md for its building blocks and branding rules). Third-party browser code (xrpl.js) is self-hosted in `static/vendor/` so a strict CSP holds and no visitor IP reaches a third party.
 - Decided 2026-11-21 (branch real-accounts-testnet): **Xaman only**. No demo mode, no demo personas, no GemWallet, no arbiter credential. Real accounts sign in with Xaman and every action is a Xaman sign request. Still XRPL Testnet only.
 - Django is pinned to 5.2.x.
@@ -46,7 +46,7 @@ config/ (settings, urls) | core/ (models, agreements.py, signing.py, faucet.py, 
 - Invite: lease, role, token (url-safe), accepted_by, accepted_at, declined_at, revoked. One link per missing party.
 - SettlementProposal: lease, tenant_amount, landlord_amount, reason, proposed_by, status (OPEN | EXECUTED | SUPERSEDED | EXPIRED), prepared_txs (JSON list), signatures (JSON {party_id: [signed blob per prepared tx]}), executed_hashes.
 - XamanRequest: our uuid, xaman_uuid, purpose (signin | escrow_create | payout_sign | evidence_anchor | trustset), party, lease, proposal, evidence, payload_index, currency_code, deeplink, pushed, status (open | signed | finishing | done | rejected | expired | failed), error, result. The browser only sees our id, the QR and the deep link.
-- FaucetGrant: party, kind (activate | tokens:EUR | tokens:USD), created_at; once per account per 24 hours.
+- FaucetGrant: party, kind (activate), created_at; once per account per 24 hours. Test tokens: `manage.py issue_test_tokens <address> <EUR|USD> [amount]` (admin).
 - Evidence: lease, kind (move_in | move_out | damage), file, sha256, uploaded_by, anchor_tx_hash.
 - LedgerEvent: lease, kind, tx_hash, summary, created_at. Every on-ledger action writes one; it powers the timeline.
 
@@ -54,7 +54,7 @@ config/ (settings, urls) | core/ (models, agreements.py, signing.py, faucet.py, 
 - GET/POST /api/me/ -> signed-in account {address, display_name, balances}; POST sets the display name
 - POST /api/auth/signin/ -> starts a Xaman SignIn request; POST /api/auth/signout/
 - GET  /api/xaman/requests/<id>/ -> poll a sign request (status, QR, deeplink); POST .../cancel/
-- GET  /api/faucet/ -> what the account may still claim; POST /api/faucet/activate/, /api/faucet/trustline/ (Xaman request), /api/faucet/tokens/
+- GET  /api/faucet/ -> what the account may still claim; POST /api/faucet/activate/, /api/faucet/trustline/ (Xaman request)
 - GET  /api/invites/<token>/ -> what the invite is for; POST .../accept/, .../decline/
 - GET/POST /api/leases/ -> list the account's agreements (?status=); create a draft {role, currency, amount, end_in_minutes or end_date, grace_minutes, title, arbiter_address} -> {lease_id}
 - GET  /api/leases/<id>/ -> full state incl. agreement (invites, approvals), settlement, escrow, proposals, events, evidence, actions

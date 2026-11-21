@@ -268,12 +268,12 @@ class MemoTests(SimpleTestCase):
         from xrpl.models.transactions import AccountSet
         from xrpl.wallet import Wallet
 
-        tx = AccountSet(account=Wallet.create().address, memos=[services._memo("safedeposit/evidence", data)]).to_xrpl()
-        self.assertEqual(services.read_memo(tx, "safedeposit/evidence"), data)
+        tx = AccountSet(account=Wallet.create().address, memos=[services._memo("vindex/evidence", data)]).to_xrpl()
+        self.assertEqual(services.read_memo(tx, "vindex/evidence"), data)
         self.assertIsNone(services.read_memo(tx, "other/type"))
-        self.assertIsNone(services.read_memo({}, "safedeposit/evidence"))
+        self.assertIsNone(services.read_memo({}, "vindex/evidence"))
         with self.assertRaises(LedgerError):
-            services._memo("safedeposit/evidence", {"x": "y" * 2000})
+            services._memo("vindex/evidence", {"x": "y" * 2000})
 
 
 def response(status=200, data=None):

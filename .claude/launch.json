@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "safedeposit",
+      "name": "vindex",
       "runtimeExecutable": ".venv/bin/python",
       "runtimeArgs": ["manage.py", "runserver", "8000", "--noreload"],
       "port": 8000

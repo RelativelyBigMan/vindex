@@ -1,10 +1,10 @@
-# safeDeposit
+# Vindex
 
-**Your deposit, returned by the ledger.** safeDeposit (repo: decelsus) protects rental security deposits with native
+**Your deposit, returned by the ledger.** Vindex (repo: decelsus) protects rental security deposits with native
 XRP Ledger features. The tenant locks the deposit in a token escrow. If the lease ends normally, the ledger hands it
 back and nobody has to approve anything. If the tenant moves out early or the landlord claims damage, the deposit moves
 to an account that only two of tenant, landlord and an independent arbiter can spend from together.
-safeDeposit never holds the money and cannot move it. Built for IXH26 (Track 2, XRPL applications). Runs on the XRPL
+Vindex never holds the money and cannot move it. Built for IXH26 (Track 2, XRPL applications). Runs on the XRPL
 Testnet with real Xaman accounts; not for mainnet.
 
 ## How it works
@@ -48,7 +48,7 @@ sequenceDiagram
 | Crypto-conditions (PREIMAGE-SHA-256) | early release needs a secret that stays on the server; `ledger/conditions.py` |
 | Multisig: SignerList (quorum 2 of 3) with the master key disabled | the per-lease settlement account |
 | Issued tokens and trust lines, `lsfAllowTrustLineLocking` | test EUR and USD |
-| Memos | evidence photos: only the SHA-256 is anchored (`safedeposit/evidence`) |
+| Memos | evidence photos: only the SHA-256 is anchored (`vindex/evidence`) |
 | Batch | not used: the amendment is not enabled on Testnet (checked 2026-11-20). Payouts are sequential payments. |
 
 ## Architecture
@@ -139,8 +139,13 @@ keys with no value, and the app refuses to start against mainnet.
 
 ## Test funds
 
-The dashboard has a test funds card: activate the account (test XRP from the platform treasury), add the trust line
-for the test token (a Xaman signature) and receive 5,000 test tokens. Each step is allowed once per account per day.
+The dashboard has a test funds card: activate the account (50 test XRP from the platform treasury, once a day) and add
+the trust line for each test token (a Xaman signature). Every account that pays or receives EUR/USD needs that trust
+line, including a landlord who receives part of a split. Test tokens are issued by an admin:
+
+```powershell
+.venv\Scripts\python manage.py issue_test_tokens rADDRESS EUR 5000
+```
 
 ## Checks
 
@@ -159,7 +164,7 @@ A manual multisign check with real Xaman accounts is planned (see `docs/superpow
 With `runserver` and `run_bot` running, use two browsers (or one plus a private window) with two Xaman accounts, A and
 B, plus a third account C for the arbiter:
 
-1. Sign in as A, set a name, and use the dashboard test funds card (activate, trust line, tokens). Do the same for B.
+1. Sign in as A, set a name, and use the dashboard test funds card (activate, trust line), then issue test tokens with `issue_test_tokens`. Give B a trust line too.
 2. **A, normal end.** As A (tenant) create an agreement ending in 2 minutes, grace 1. Open the landlord link as B and
    accept; open the arbiter link as C and accept; A and B approve the arbiter. The setup steps tick. A locks the
    deposit in Xaman. Shortly after the countdown ends the bot returns it.
@@ -199,7 +204,7 @@ B, plus a third account C for the arbiter:
 
 - The XRP "X" symbol (`partials/_xrp_symbol.html`) is the official path, unmodified. Black or white only, at least
   20px tall, with clear space of 0.25 x its height. Use it only for "Built on the XRP Ledger" and the verify banner,
-  never inside the safeDeposit logo.
+  never inside the Vindex logo.
 - Palette: white / Grey 5 `#F0F3F7` backgrounds, Black `#141414` text, Green `#21E46B` accents (green fills take black
   text; green *text* uses Dark Green `#078139` for contrast).
 - The footer states the project isn't affiliated with Ripple or the XRP Ledger Foundation. Keep that line.

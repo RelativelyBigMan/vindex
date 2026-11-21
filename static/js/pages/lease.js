@@ -73,7 +73,7 @@ function render() {
   const s = state;
   const me = s.me;
   const tenant = s.parties.find((p) => p.role === "tenant") || { name: "the tenant" };
-  document.title = `${s.title || "Deposit"} · safeDeposit`;
+  document.title = `${s.title || "Deposit"} · Vindex`;
   $("[data-title]").textContent = s.title || `Deposit of ${money(s.amount, s.currency)}`;
   $("[data-subtitle]").textContent = `${money(s.amount, s.currency_label)} · lease ends ${fmtTime(s.end_at)} · you are the ${s.role}`;
   $("[data-status]").replaceChildren(statusBadge(s.status));
@@ -221,7 +221,7 @@ function lockStep(s) {
   box.append(el("div", { class: "actions" }, el("button", {
     type: "button", class: "btn btn--primary btn--lg",
     on: { click: (event) => act(event.currentTarget, IN_XAMAN, () => lockDeposit(leaseId)) },
-  }, "Lock deposit in Xaman")), el("p", { class: "small muted", text: "Signed in your own Xaman app. safeDeposit never sees your key." }));
+  }, "Lock deposit in Xaman")), el("p", { class: "small muted", text: "Signed in your own Xaman app. Vindex never sees your key." }));
   return box;
 }
 

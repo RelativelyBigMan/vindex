@@ -36,7 +36,7 @@ export async function api(path, { method = "GET", json, form, quiet = false } = 
   try {
     response = await fetch(path, { method, headers, body, credentials: "same-origin" });
   } catch {
-    const error = new ApiError("Can't reach the safeDeposit server. Check the connection and try again.", "offline", 0);
+    const error = new ApiError("Can't reach the Vindex server. Check the connection and try again.", "offline", 0);
     if (!quiet) toast(error.message, "error");
     throw error;
   }

@@ -45,7 +45,7 @@ def _start(purpose, txjson, *, party=None, submit=True, multisign=False, instruc
 
 
 def start_signin():
-    payload = xaman.create_payload({"TransactionType": "SignIn"}, submit=False, instruction="Sign in to safeDeposit")
+    payload = xaman.create_payload({"TransactionType": "SignIn"}, submit=False, instruction="Sign in to Vindex")
     return XamanRequest.objects.create(xaman_uuid=payload["uuid"], purpose=P.SIGNIN, deeplink=payload["deeplink"], pushed=payload["pushed"])
 
 

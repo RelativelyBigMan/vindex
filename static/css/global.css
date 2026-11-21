@@ -1,5 +1,5 @@
 /* ==========================================================================
-   safeDeposit global stylesheet: "whitepaper" theme
+   Vindex global stylesheet: "whitepaper" theme
    A light XRP Ledger–style site (per the XRP Brand Toolkit 2026 palette)
    typeset like a LaTeX paper.
 
@@ -311,7 +311,7 @@ a:hover { background-size: 100% 1px; }
 .site-nav a { color: var(--color-text); font-variant: small-caps; letter-spacing: 0.04em; font-size: 1.0625rem; }
 .site-nav a[aria-current="page"] { background-size: 100% 2px; background-image: linear-gradient(var(--color-accent), var(--color-accent)); }
 
-.wallet { display: flex; align-items: center; gap: var(--space-2); }
+.wallet { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; } /* right edge, also when the nav is hidden (signed out) */
 .wallet__address {
   font-family: var(--font-mono);
   font-size: var(--text-xs);

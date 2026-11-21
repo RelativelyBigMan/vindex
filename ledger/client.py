@@ -64,7 +64,7 @@ def assert_not_mainnet():
         if looks_like_mainnet(net[field]):
             raise ImproperlyConfigured(
                 f"Refusing to start: {field} URL {net[field]!r} is not an XRPL Testnet/Devnet host. "
-                "safeDeposit holds platform wallet keys and must never run against mainnet."
+                "Vindex holds platform wallet keys and must never run against mainnet."
             )
 
 

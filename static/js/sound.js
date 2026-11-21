@@ -10,7 +10,7 @@
  * device only and is never sent anywhere.
  */
 
-const STORAGE_KEY = "safedeposit:sound";
+const STORAGE_KEY = "vindex:sound";
 const MIN_GAP_MS = 60;
 
 /** Each voice: a sine "body" with a quick pitch drop, plus an optional quiet second partial. */

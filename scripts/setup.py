@@ -70,7 +70,7 @@ def make_env_file():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Set up safeDeposit for local development.")
+    parser = argparse.ArgumentParser(description="Set up Vindex for local development.")
     parser.add_argument("--bootstrap", action="store_true",
                         help="Also create the platform wallets on the XRPL test network and run preflight (needs internet, about 2 minutes).")
     args = parser.parse_args()
@@ -101,7 +101,7 @@ def main():
 
     say("Database")
     if old_database():
-        sys.exit("\ndb.sqlite3 was made by an older version of safeDeposit, and the database migrations have been reset since.\n"
+        sys.exit("\ndb.sqlite3 was made by an older version of Vindex, and the database migrations have been reset since.\n"
                  "Delete db.sqlite3 and rerun this script with --bootstrap (or run manage.py migrate and manage.py bootstrap).\n"
                  "It only holds Testnet data; the platform wallets are created again.")
     run("manage.py", "migrate")

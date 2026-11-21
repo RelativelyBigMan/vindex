@@ -518,7 +518,7 @@ def _prepare_again(proposal, lease):
 
 # ---- evidence: a photo's SHA-256 anchored in a public memo ----
 
-EVIDENCE_MEMO_TYPE = "safedeposit/evidence"
+EVIDENCE_MEMO_TYPE = "vindex/evidence"
 
 
 def evidence_memo(item):

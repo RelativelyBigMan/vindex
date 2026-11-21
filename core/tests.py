@@ -699,7 +699,7 @@ class SigningTests(LedgerMockedTestCase):
     def test_signin_creates_the_account_and_stores_the_push_token(self):
         from . import signing
         req = signing.start_signin()
-        self.assertEqual(self.payloads[0], ({"TransactionType": "SignIn"}, {"submit": False, "instruction": "Sign in to safeDeposit"}))
+        self.assertEqual(self.payloads[0], ({"TransactionType": "SignIn"}, {"submit": False, "instruction": "Sign in to Vindex"}))
         self.assertEqual(signing.refresh(req).status, "open")
         address = Wallet.create().address
         self.signed(account=address, user_token="tok")

@@ -10,9 +10,7 @@
     <span class="line"><span>Your deposit,</span></span>
     <span class="line"><span>returned by the ledger.</span></span>
   </h1>
-  <p class="titleblock__authors">Tenant<sup>1</sup> &middot; Landlord<sup>2</sup> &middot; Arbiter<sup>3</sup></p>
-  <p class="titleblock__affil"><sup>1</sup>locks the deposit &ensp; <sup>2</sup>owns the property &ensp; <sup>3</sup>independent of both</p>
-  <p class="titleblock__date">Settled in test euros and dollars on the XRP Ledger {{ escrow_config.network.name|default:"Testnet" }}</p>
+  <p class="titleblock__authors">For Tenants and Landlords</p>
   <div class="row" data-home-cta>
     {% if not escrow_config.xaman_configured %}
     <p class="alert alert--warning">Sign-in is switched off: this server has no Xaman API key yet (see the README).</p>
@@ -44,7 +42,7 @@
 
 <section class="abstract" aria-labelledby="abstract-label">
   <span class="abstract__label" id="abstract-label">Abstract</span>
-  <p>Rental deposits are usually held by one side of the agreement. safeDeposit locks the tenant's deposit in an escrow on the XRP Ledger instead. If nothing goes wrong, the ledger itself hands the deposit back when the lease ends. If there is a dispute, the money moves to an account that only two of the tenant, the landlord and an independent arbiter can spend from together. The ledger returns your deposit, not us.</p>
+  <p>Rental deposits are usually held by one side of the agreement. Vindex locks the tenant's deposit in an escrow on the XRP Ledger instead. If nothing goes wrong, the ledger itself hands the deposit back when the lease ends. If there is a dispute, the money moves to an account that only two of the tenant, the landlord and an independent arbiter can spend from together. The ledger returns your deposit, not us.</p>
 </section>
 
 <section class="sec" id="protocol" aria-labelledby="sec-protocol">
@@ -56,7 +54,7 @@
     </div>
     <div class="defn">
       <p class="defn__head"><span class="defn__name">(Live)</span></p>
-      <p class="defn__body">During the lease nobody can spend the deposit: not the tenant, not the landlord, not safeDeposit. Anyone can check it on the ledger.</p>
+      <p class="defn__body">During the lease nobody can spend the deposit: not the tenant, not the landlord, not Vindex. Anyone can check it on the ledger.</p>
     </div>
     <div class="defn">
       <p class="defn__head"><span class="defn__name">(Return)</span></p>

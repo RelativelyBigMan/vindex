@@ -7,7 +7,7 @@ import { readMemo, sha256Hex, withLedger, optional } from "./ledger.js";
 import { loadMe } from "./session.js";
 import { signSteps, signWithXaman } from "./xaman.js";
 
-export const EVIDENCE_MEMO = "safedeposit/evidence";
+export const EVIDENCE_MEMO = "vindex/evidence";
 
 export async function signIn() {
   const done = await signWithXaman(() => post("/api/auth/signin/"), { title: "Sign in with Xaman" });

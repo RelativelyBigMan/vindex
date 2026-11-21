@@ -2,7 +2,7 @@
 {% load static %}
 
 {% block title %}Verify a deposit{% endblock %}
-{% block meta_description %}Check a rental deposit directly on the XRP Ledger, without trusting safeDeposit.{% endblock %}
+{% block meta_description %}Check a rental deposit directly on the XRP Ledger, without trusting Vindex.{% endblock %}
 
 {% block content %}
 <div data-verify-page data-lease-id="{{ lease_id }}">
@@ -10,7 +10,7 @@
     {% include "partials/_xrp_symbol.html" %}
     <div>
       <strong>Verified from the XRP Ledger, not from our database</strong>
-      <p class="small">Your browser asks a public {{ escrow_config.network.name }} server directly. safeDeposit only says where to look: addresses and the escrow's sequence number.</p>
+      <p class="small">Your browser asks a public {{ escrow_config.network.name }} server directly. Vindex only says where to look: addresses and the escrow's sequence number.</p>
     </div>
   </div>
 
