@@ -7,6 +7,7 @@ import { ROLE_LABEL, busy, el, fill, fmtTime, money, toast } from "../ui.js";
 const root = document.querySelector("[data-invite-page]");
 const token = root.dataset.token;
 const $ = (selector) => root.querySelector(selector);
+let shownArbiter = ""; // the arbiter address on screen; accepting sends it so a changed arbiter is never approved unseen
 const RULES = {
   landlord: "As landlord you receive any agreed damage payout. You can claim damage until the grace period ends; after that the deposit returns to the tenant automatically.",
   tenant: "As tenant you lock the deposit from your own Xaman account. If nothing goes wrong it comes back to you automatically after the lease end plus the grace period.",
@@ -25,6 +26,7 @@ async function render() {
     return fill(used, el("p", { class: "alert alert--warning", text: "This invite has already been used." }));
   }
   $("[data-terms]").hidden = false;
+  shownArbiter = lease.arbiter_address || "";
   $("[data-subtitle]").textContent = `${lease.created_by} started this agreement${lease.title ? ` for ${lease.title}` : ""}.`;
   fill($("[data-terms]"),
     el("h2", { class: "card__title", text: "Terms" }),
@@ -61,14 +63,19 @@ async function decide(button, what) {
   if (what === "decline" && !window.confirm("Decline? This closes the agreement for everyone.")) return;
   await busy(button, what === "accept" ? "Accepting…" : "Declining…", async () => {
     try {
-      const result = await post(`/api/invites/${token}/${what}/`);
+      const body = what === "accept" ? { expected_arbiter: shownArbiter } : {};
+      const result = await post(`/api/invites/${token}/${what}/`, body, { quiet: what === "accept" });
       if (result.lease_id) window.location.assign(`/leases/${result.lease_id}/`);
       else if (what === "decline") {
         $("[data-subtitle]").textContent = "";
         $("[data-terms]").hidden = true;
         fill($("[data-decision]"), el("p", { text: "You declined this invitation. The agreement is closed." }));
       } else await render();
-    } catch { /* shown by api.js */ }
+    } catch (error) {
+      if (what !== "accept") return; // shown by api.js
+      toast(error.message, error.code === "terms_changed" ? "warning" : "error");
+      if (error.code === "terms_changed") await render();
+    }
   });
 }
 

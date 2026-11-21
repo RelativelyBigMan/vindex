@@ -302,8 +302,25 @@ def me(request):
     return _me(party)
 
 
+SIGNIN_LIMIT = 10  # sign-in requests per minute per browser session (or client IP without one)
+
+
+def _throttle_signin(request):
+    who = request.session.session_key or request.META.get("REMOTE_ADDR") or "unknown"
+    key = f"signin-rate:{hashlib.sha256(who.encode()).hexdigest()}"
+    cache.add(key, 0, 60)  # the window starts with the first attempt
+    try:
+        count = cache.incr(key)
+    except ValueError:  # expired between add and incr
+        cache.set(key, 1, 60)
+        count = 1
+    if count > SIGNIN_LIMIT:
+        raise InvalidTransition("Too many sign-in attempts. Wait a minute.", "too_many")
+
+
 @api("POST")
 def signin(request):
+    _throttle_signin(request)
     req = signing.start_signin()
     request.session["signin_request"] = str(req.pk)  # only this browser may complete it
     return signing.present(req)
@@ -575,7 +592,7 @@ def evidence_anchor(request, evidence_id):
 def lease_public(request, lease_id):
     """For the public verify page: where to look on the ledger. Addresses and the escrow sequence only."""
     lease = Lease.objects.select_related("tenant", "landlord", "arbiter", "currency").filter(pk=lease_id).first()
-    if lease is None or lease.status == Lease.Status.PENDING_ACCEPTANCE:
+    if lease is None or not lease.verifiable():
         raise Http404
     net = network()
     return {
@@ -593,9 +610,31 @@ def lease_public(request, lease_id):
 
 # ---- invites ----
 
+def _invite_or_404(token):
+    """The invite for a token; an unknown or revoked token is a plain 404 for the API."""
+    try:
+        return agreements.invite_for(token)
+    except InvalidInput as exc:
+        if exc.code == "invite_unknown":
+            raise Http404 from exc
+        raise
+
+
+def _already_party(item, lease, party):
+    """True when the visitor holds another role in this agreement, so this invite isn't theirs to accept.
+
+    An arbiter named by address already has the arbiter role before accepting its own invite.
+    """
+    if party is None or lease.role_of(party) is None:
+        return False
+    if item.role == "arbiter" and lease.role_of(party) == "arbiter":
+        return False
+    return item.accepted_by_id != party.pk
+
+
 @api("GET")
 def invite(request, token):
-    item = agreements.invite_for(token)
+    item = _invite_or_404(token)
     lease, party = item.lease, current_party(request, required=False)
     used = bool(item.accepted_by_id or item.declined_at)
     by_you = bool(party and item.accepted_by_id == party.pk)
@@ -608,25 +647,33 @@ def invite(request, token):
     return {
         "role": item.role, "used": used,
         "accepted_by_you": by_you,
-        "signed_in": party is not None, "already_party": bool(party and lease.role_of(party) and item.accepted_by_id != party.pk),
+        "signed_in": party is not None, "already_party": _already_party(item, lease, party),
         "lease": {
             "id": str(lease.pk), "title": lease.title, "status": lease.status, "status_label": lease.get_status_display(),
             "amount": plain(lease.amount), "currency": lease.currency.code, "currency_label": lease.currency.label,
             "end_at": lease.end_at.isoformat(), "grace_minutes": lease.grace_minutes, "cancel_after": lease.cancel_after.isoformat(),
             "parties": _parties(lease), "created_by": lease.created_by.label,
+            "arbiter_address": lease.arbiter.address if lease.arbiter_id else "",
         },
     }
 
 
 @api("POST")
 def invite_accept(request, token):
-    lease = agreements.accept_invite(token, current_party(request))
+    party = current_party(request)
+    _invite_or_404(token)
+    expected = _body(request).get("expected_arbiter")
+    if expected is not None:
+        expected = str(expected).strip()
+    lease = agreements.accept_invite(token, party, expected_arbiter=expected)
     return {"lease_id": str(lease.pk)}
 
 
 @api("POST")
 def invite_decline(request, token):
-    agreements.decline_invite(token, current_party(request))
+    party = current_party(request)
+    _invite_or_404(token)
+    agreements.decline_invite(token, party)
     return {"ok": True}
 
 

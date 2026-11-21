@@ -48,7 +48,8 @@ def lease_detail(request, lease_id):
 @require_safe
 @ensure_csrf_cookie
 def verify(request, lease_id):
-    if not Lease.objects.filter(pk=lease_id).exclude(status=Lease.Status.PENDING_ACCEPTANCE).exists():
+    lease = Lease.objects.filter(pk=lease_id).first()
+    if lease is None or not lease.verifiable():
         raise Http404
     return render(request, "escrow/verify.html", {"lease_id": str(lease_id)})
 

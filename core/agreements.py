@@ -59,7 +59,9 @@ def _require_pending(lease, doing):
         raise InvalidTransition(f"You can't {doing} any more: this agreement is '{lease.get_status_display().lower()}'.", "wrong_status")
 
 
-def accept_invite(token, party):
+def accept_invite(token, party, expected_arbiter=None):
+    """Accept an invite. `expected_arbiter` is the arbiter address the person saw ("" for none); when given and the
+    arbiter changed since, nothing is accepted (accepting as tenant or landlord also approves the arbiter)."""
     invite = invite_for(token)
     if invite.accepted_by_id == party.pk:
         lease = invite.lease
@@ -70,6 +72,10 @@ def accept_invite(token, party):
     with transaction.atomic():
         lease = Lease.objects.select_for_update().get(pk=invite.lease_id)
         _require_pending(lease, "accept")
+        if expected_arbiter is not None:
+            arbiter_now = lease.arbiter.address if lease.arbiter_id else ""
+            if str(expected_arbiter).strip() != arbiter_now:
+                raise InvalidTransition("The arbiter changed since you opened this page. Review the terms again.", "terms_changed")
         current = lease.role_of(party)
         if invite.role in SIDES:
             if current is not None:

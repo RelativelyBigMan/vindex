@@ -121,6 +121,12 @@ class Lease(models.Model):
         """The three parties whose signatures count, in a fixed order (all set once setup starts)."""
         return [self.tenant, self.landlord, self.arbiter]
 
+    def verifiable(self):
+        """Whether the public verify page has anything to show: not for open agreements, nor cancelled ones never locked."""
+        if self.status == self.Status.PENDING_ACCEPTANCE:
+            return False
+        return not (self.status == self.Status.CANCELLED and self.escrow_sequence is None)
+
     def role_of(self, party):
         """'tenant' | 'landlord' | 'arbiter' for a party of this lease, else None."""
         if party is None:

@@ -50,8 +50,20 @@ def start_signin():
 
 
 def start_escrow(lease, party):
+    """A Xaman request to lock the deposit. While one is still open it is handed out again (scan it again);
+    while one is signed and being checked, a second one is refused so the deposit can't be locked twice."""
     if "lock_deposit" not in lifecycle.allowed_actions(lease, party):
         raise InvalidTransition("Only the tenant can lock the deposit, once the settlement account is ready.", "not_allowed")
+    pending = XamanRequest.objects.filter(
+        lease=lease, purpose=P.ESCROW_CREATE, status__in=(R.OPEN, R.SIGNED, R.FINISHING),
+    ).order_by("-created_at").first()
+    if pending is not None:
+        if pending.status in (R.OPEN, R.SIGNED):
+            pending = refresh(pending)  # it may have expired, been signed or timed out meanwhile
+        if pending.status == R.OPEN and pending.party_id == party.pk:
+            return pending
+        if pending.status in (R.OPEN, R.SIGNED, R.FINISHING, R.DONE):
+            raise InvalidTransition("The deposit is already being locked. Wait for that request to finish.", "request_open")
     tx = services.build_escrow_create(
         lease.tenant.address, lease.settlement_address, lease.currency.code, lease.currency.issuer_address,
         lease.amount, lease.condition_hex, lease.cancel_after,
@@ -111,6 +123,7 @@ def refresh(req):
         if won and req.party_id and token:
             Party.objects.filter(pk=req.party_id).update(xaman_user_token=token)
         req.refresh_from_db()
+        req.user_token = token  # in memory only: the sign-in finisher stores it on the new Party
     if req.status != R.SIGNED:
         return req
     if not XamanRequest.objects.filter(pk=req.pk, status=R.SIGNED).update(status=R.FINISHING):
@@ -121,18 +134,29 @@ def refresh(req):
         finished = FINISHERS[req.purpose](req)
     except LedgerError as exc:
         if exc.engine_result in TRANSIENT and not _timed_out(req):
-            XamanRequest.objects.filter(pk=req.pk, status=R.FINISHING).update(status=R.SIGNED)
-            req.status = R.SIGNED
-            return req
+            return _back_to_signed(req)
         return _fail(req, exc)
-    except (InvalidInput, InvalidTransition) as exc:
+    except InvalidTransition as exc:
+        if exc.code == "busy" and not _timed_out(req):  # the lease is locked by another action: try on the next poll
+            return _back_to_signed(req)
         return _fail(req, exc)
+    except InvalidInput as exc:
+        return _fail(req, exc)
+    except Exception:
+        log.exception("Xaman request %s (%s): finisher crashed", req.pk, req.purpose)
+        return _fail(req, InvalidInput("Something went wrong finishing this request.", "server_error"))
     if finished:
         req.status = R.DONE
         req.save(update_fields=["status", "party"])
     else:
-        XamanRequest.objects.filter(pk=req.pk, status=R.FINISHING).update(status=R.SIGNED)
-        req.status = R.SIGNED
+        _back_to_signed(req)
+    return req
+
+
+def _back_to_signed(req):
+    """Let the next poll try the finisher again."""
+    XamanRequest.objects.filter(pk=req.pk, status=R.FINISHING).update(status=R.SIGNED)
+    req.status = R.SIGNED
     return req
 
 
@@ -163,7 +187,7 @@ def _finish_signin(req):
     if not is_valid_classic_address(address):
         raise InvalidInput("Xaman didn't report a valid account.", "bad_address")
     party, _ = Party.objects.get_or_create(address=address)
-    token = xaman.get_payload(req.xaman_uuid).get("user_token")  # not kept in req.result
+    token = getattr(req, "user_token", None)  # from the poll that saw it signed; never kept in req.result
     if token and party.xaman_user_token != token:
         party.xaman_user_token = token
         party.save(update_fields=["xaman_user_token"])

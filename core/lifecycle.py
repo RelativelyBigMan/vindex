@@ -566,11 +566,28 @@ def _cancel(lease, message, kind):
             return True
     return False
 
+DRAFT_STALE_AFTER = timedelta(minutes=10)  # setup takes about 20 s and touches updated_at at every step
+
+
+def _fail_stale_drafts():
+    """A setup interrupted by a restart leaves the lease in DRAFT for good: close it so nobody waits on it."""
+    message = "Setting up the settlement account was interrupted. Start a new agreement."
+    results = []
+    stale = Lease.objects.filter(status=S.DRAFT, settlement_address="", updated_at__lt=timezone.now() - DRAFT_STALE_AFTER)
+    for lease in stale:
+        if _advance(lease, S.DRAFT, S.FAILED, error=message):
+            record(lease, "failed", message)
+            results.append({"lease_id": str(lease.pk), "action": "failed_stale_draft"})
+    return results
+
+
 def bot_pass():
-    """Return every deposit whose automatic return date (+10 s) has passed on the ledger.
+    """Return every deposit whose automatic return date (+10 s) has passed on the ledger, and close
+    agreements whose setup was interrupted.
 
     -> list of {'lease_id', 'action', ...}.
     """
+    stale_drafts = _fail_stale_drafts()
     related = ("tenant", "landlord", "arbiter", "currency")
     pending = Lease.objects.filter(status=S.PENDING_ACCEPTANCE).select_related(*related)
     active = Lease.objects.filter(status=S.ACTIVE, escrow_sequence__isnull=False).select_related(*related)
@@ -580,10 +597,10 @@ def bot_pass():
         .exclude(events__kind="returned").select_related(*related)
     )
     if not (pending.exists() or active.exists() or unlocked.exists() or cancelled.exists()):
-        return []
+        return stale_drafts
     now = services.ledger_close_time()
     due = lambda lease: now > lease.cancel_after + services.CANCEL_SAFETY  # noqa: E731
-    results = []
+    results = stale_drafts
     # Both lists are read before anything changes, so a lease is handled once per pass.
     for step, leases in ((_expire_pending, list(pending)), (_expire_unlocked, list(unlocked)), (_return_or_reconcile, list(active)),
                         (_return_cancelled, list(cancelled))):
@@ -657,7 +674,38 @@ def _return_or_reconcile(lease):
         return _reconcile(lease)
     if _advance(lease, S.ACTIVE, S.RETURNED):
         record(lease, "returned", f"Deposit returned to {lease.tenant.label} automatically", tx_hash)
-    return {"action": "returned", "tx_hash": tx_hash}
+    result = {"action": "returned", "tx_hash": tx_hash}
+    duplicate = _cancel_duplicate_escrow(lease)
+    if duplicate:
+        result["duplicate_tx_hash"] = duplicate
+    return result
+
+
+def _cancel_duplicate_escrow(lease):
+    """Safety net: a second escrow for this lease (locked twice) also goes back to the tenant. -> tx hash or None.
+
+    Runs after the recorded escrow was cancelled, so any escrow still found under the lease's unique
+    condition is a different one.
+    """
+    try:
+        tx_hash = services.find_escrow_create_hash(lease.tenant.address, lease.settlement_address, lease.condition_hex)
+        if not tx_hash:
+            return None
+        found = services.get_transaction(tx_hash)
+        if verify_escrow_create_tx(lease, found):
+            return None
+        tx = found["tx"]
+        owner, sequence = tx["Account"], int(tx.get("Sequence") or tx.get("TicketSequence"))
+        if (owner, sequence) == (lease.escrow_owner, lease.escrow_sequence):
+            return None
+        if services.get_escrow(owner, sequence) is None:
+            return None
+        cancel_hash = services.cancel_escrow(platform_wallet("bot"), owner, sequence, lease.cancel_after)
+    except LedgerError as exc:
+        log.warning("bot: lease %s: second escrow not returned yet: %s", lease.pk, exc)
+        return None
+    record(lease, "returned_duplicate", f"A second deposit locked for this lease was returned to {lease.tenant.label}", cancel_hash)
+    return cancel_hash
 
 
 def _reconcile(lease):
@@ -672,7 +720,7 @@ def _reconcile(lease):
     return {"action": "reconciled_returned"}
 
 
-# ---- what the current persona may do ----
+# ---- what the signed-in account may do ----
 
 def open_proposal(lease):
     return lease.proposals.filter(status=SettlementProposal.Status.OPEN).first()

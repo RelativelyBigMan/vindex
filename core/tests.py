@@ -1032,3 +1032,255 @@ class ApiTests(LedgerMockedTestCase):
         path = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, path, ignore_errors=True)
         return path
+
+
+class FinalReviewFixTests(LedgerMockedTestCase):
+    """Fixes from the whole-branch review: invites, escrow request reuse, finisher failures, bot safety nets."""
+
+    HASH = "AB" * 32
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(mock.patch.stopall)
+        self.payloads = []
+        mock.patch.object(xaman, "create_payload", side_effect=self._create).start()
+        self.get_payload = mock.patch.object(xaman, "get_payload").start()
+        self.get_payload.return_value = {"status": "open", "account": "", "hex": "", "txid": "", "user_token": ""}
+
+    def _create(self, txjson, **options):
+        self.payloads.append((txjson, options))
+        n = len(self.payloads)
+        return {"uuid": f"x-{n}", "deeplink": f"https://xumm.app/sign/x-{n}", "pushed": False}
+
+    def signed(self, **reply):
+        self.get_payload.return_value = {"status": "signed", "account": "", "hex": "", "txid": "", "user_token": "", **reply}
+
+    def login(self, party):
+        session = self.client.session
+        session["party_id"] = party.pk
+        session.save()
+
+    def post(self, path, data=None):
+        return self.client.post(path, json.dumps(data or {}), content_type="application/json")
+
+    def draft(self, arbiter_address=""):
+        from . import agreements
+        return agreements.create_draft(
+            self.tenant, "tenant", currency=self.eur, amount=Decimal("1000"),
+            end_at=timezone.now() + timedelta(days=30), grace_minutes=60, title="Flat", arbiter_address=arbiter_address,
+        )
+
+    def token(self, lease, role):
+        return lease.invites.get(role=role, revoked=False).token
+
+    # 1. a named arbiter can accept its own invite
+
+    def test_named_arbiter_sees_accept_and_the_agreement_starts(self):
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        self.login(self.arbiter)
+        seen = self.client.get(f"/api/invites/{self.token(lease, 'arbiter')}/").json()
+        self.assertFalse(seen["already_party"])
+        self.assertEqual(seen["lease"]["arbiter_address"], self.arbiter.address)
+        self.assertEqual(self.post(f"/api/invites/{self.token(lease, 'arbiter')}/accept/",
+                                   {"expected_arbiter": self.arbiter.address}).status_code, 200)
+        self.login(self.landlord)
+        landlord_view = self.client.get(f"/api/invites/{self.token(lease, 'landlord')}/").json()
+        self.assertFalse(landlord_view["already_party"])
+        self.assertEqual(self.post(f"/api/invites/{self.token(lease, 'landlord')}/accept/",
+                                   {"expected_arbiter": self.arbiter.address}).status_code, 200)
+        lease.refresh_from_db()
+        self.assertEqual(lease.status, S.SETTLEMENT_READY)  # left PENDING_ACCEPTANCE
+
+    def test_another_party_opening_an_invite_is_already_a_party(self):
+        lease = self.draft(arbiter_address=self.arbiter.address)
+        self.login(self.tenant)
+        self.assertTrue(self.client.get(f"/api/invites/{self.token(lease, 'arbiter')}/").json()["already_party"])
+        self.assertTrue(self.client.get(f"/api/invites/{self.token(lease, 'landlord')}/").json()["already_party"])
+
+    # 4. accepting is refused when the arbiter changed since the page was opened
+
+    def test_accept_with_a_stale_arbiter_is_refused(self):
+        from . import agreements
+        lease = self.draft()
+        token = self.token(lease, "landlord")
+        self.assertEqual(self.client.get(f"/api/invites/{token}/").json()["lease"]["arbiter_address"], "")
+        agreements.change_arbiter(lease, self.tenant, self.arbiter.address)  # changed after the landlord looked
+        with self.assertRaises(InvalidTransition) as caught:
+            agreements.accept_invite(token, self.landlord, expected_arbiter="")
+        self.assertEqual(caught.exception.code, "terms_changed")
+        lease.refresh_from_db()
+        self.assertIsNone(lease.landlord)
+        self.login(self.landlord)
+        response = self.post(f"/api/invites/{token}/accept/", {"expected_arbiter": ""})
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "terms_changed"))
+        response = self.post(f"/api/invites/{token}/accept/", {"expected_arbiter": self.arbiter.address})
+        self.assertEqual(response.status_code, 200)
+        lease.refresh_from_db()
+        self.assertEqual((lease.landlord, lease.landlord_approved_arbiter), (self.landlord, True))
+
+    def test_accept_without_expected_arbiter_still_works(self):
+        from . import agreements
+        lease = self.draft()
+        agreements.accept_invite(self.token(lease, "landlord"), self.landlord)
+        lease.refresh_from_db()
+        self.assertEqual(lease.landlord, self.landlord)
+
+    # 7b. unknown invite tokens are 404s in the API
+
+    def test_unknown_invite_token_is_a_404(self):
+        self.login(self.landlord)
+        self.assertEqual(self.client.get("/api/invites/no-such-token/").status_code, 404)
+        self.assertEqual(self.post("/api/invites/no-such-token/accept/").status_code, 404)
+        self.assertEqual(self.post("/api/invites/no-such-token/decline/").status_code, 404)
+
+    # 7a. nothing to verify for an agreement cancelled before locking
+
+    def test_cancelled_without_escrow_has_no_verify_page(self):
+        lease = self.make_lease(S.CANCELLED)
+        self.assertEqual(self.client.get(f"/verify/{lease.pk}/").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/leases/{lease.pk}/public/").status_code, 404)
+        Lease.objects.filter(pk=lease.pk).update(escrow_owner=self.tenant.address, escrow_sequence=42)
+        self.assertEqual(self.client.get(f"/verify/{lease.pk}/").status_code, 200)
+        self.assertEqual(self.client.get(f"/api/leases/{lease.pk}/public/").status_code, 200)
+
+    # 2. finisher failures never leave a request stuck
+
+    def _escrow_request(self):
+        from . import signing
+        lease = self.make_lease(S.SETTLEMENT_READY)
+        self.ledger.build_escrow_create.return_value = {"TransactionType": "EscrowCreate", "Account": self.tenant.address}
+        return lease, signing.start_escrow(lease, self.tenant)
+
+    def test_a_busy_lease_keeps_the_request_signed(self):
+        from . import signing
+        _lease, req = self._escrow_request()
+        self.signed(txid=self.HASH)
+        busy = mock.Mock(side_effect=InvalidTransition("Another action.", "busy"))
+        with mock.patch.dict(signing.FINISHERS, {signing.P.ESCROW_CREATE: busy}):
+            self.assertEqual(signing.refresh(req).status, "signed")
+            req.refresh_from_db()
+            self.assertEqual((req.status, req.error), ("signed", ""))
+            XamanRequest.objects.filter(pk=req.pk).update(signed_at=timezone.now() - signing.VALIDATION_TIMEOUT - timedelta(seconds=1))
+            req.refresh_from_db()
+            self.assertEqual(signing.refresh(req).status, "failed")
+
+    def test_an_unexpected_finisher_error_fails_the_request_with_a_generic_message(self):
+        from . import signing
+        _lease, req = self._escrow_request()
+        self.signed(txid=self.HASH)
+        crash = mock.Mock(side_effect=RuntimeError("secret internals"))
+        with mock.patch.dict(signing.FINISHERS, {signing.P.ESCROW_CREATE: crash}), self.assertLogs("core.signing", level="ERROR"):
+            signing.refresh(req)
+        req.refresh_from_db()
+        self.assertEqual((req.status, req.error), ("failed", "Something went wrong finishing this request."))
+
+    # 3. one escrow request per lease at a time
+
+    def test_an_open_escrow_request_is_handed_out_again(self):
+        from . import signing
+        lease, first = self._escrow_request()
+        again = signing.start_escrow(lease, self.tenant)
+        self.assertEqual((again.pk, len(self.payloads)), (first.pk, 1))
+
+    def test_an_expired_escrow_request_is_replaced(self):
+        from . import signing
+        lease, first = self._escrow_request()
+        self.get_payload.return_value = {"status": "expired", "account": "", "hex": "", "txid": "", "user_token": ""}
+        again = signing.start_escrow(lease, self.tenant)
+        self.assertNotEqual(again.pk, first.pk)
+        self.assertEqual(len(self.payloads), 2)
+
+    def test_a_signed_escrow_request_blocks_a_second_lock(self):
+        from . import signing
+        lease, req = self._escrow_request()
+        XamanRequest.objects.filter(pk=req.pk).update(status="finishing", signed_at=timezone.now())
+        with self.assertRaises(InvalidTransition) as caught:
+            signing.start_escrow(lease, self.tenant)
+        self.assertEqual(caught.exception.code, "request_open")
+        self.login(self.tenant)
+        response = self.post(f"/api/leases/{lease.pk}/escrow/")
+        self.assertEqual((response.status_code, response.json()["code"]), (409, "request_open"))
+        self.assertEqual(len(self.payloads), 1)
+
+    def test_bot_also_returns_a_second_escrow_for_the_same_lease(self):
+        lease = self.make_lease(S.ACTIVE)
+        self.ledger.ledger_close_time.side_effect = lambda *a, **k: lease.cancel_after + timedelta(minutes=1)
+        self.ledger.find_escrow_create_hash.return_value = self.HASH
+        self.ledger.get_transaction.return_value = WalletEscrowVerificationTests.found(self, lease)  # Sequence 77, not 42
+        result = lifecycle.bot_pass()
+        self.assertEqual(result, [{"lease_id": str(lease.pk), "action": "returned", "tx_hash": "CANCELHASH",
+                                   "duplicate_tx_hash": "CANCELHASH"}])
+        self.assertEqual([c.args[1:3] for c in self.ledger.cancel_escrow.call_args_list],
+                         [(self.tenant.address, 42), (self.tenant.address, 77)])
+        self.assertEqual(lease.events.filter(kind="returned_duplicate").count(), 1)
+
+    def test_bot_ignores_the_recorded_escrow_when_looking_for_a_second_one(self):
+        lease = self.make_lease(S.ACTIVE)
+        Lease.objects.filter(pk=lease.pk).update(escrow_sequence=77)
+        self.ledger.ledger_close_time.side_effect = lambda *a, **k: lease.cancel_after + timedelta(minutes=1)
+        self.ledger.find_escrow_create_hash.return_value = self.HASH
+        self.ledger.get_transaction.return_value = WalletEscrowVerificationTests.found(self, lease)
+        self.assertEqual(lifecycle.bot_pass()[0]["action"], "returned")
+        self.ledger.cancel_escrow.assert_called_once()
+
+    # 8. a setup interrupted by a restart
+
+    def test_bot_fails_a_draft_whose_setup_was_interrupted(self):
+        stale, fresh = self.make_lease(S.DRAFT), self.make_lease(S.DRAFT)
+        Lease.objects.filter(pk=stale.pk).update(updated_at=timezone.now() - timedelta(minutes=11))
+        self.assertEqual(lifecycle.bot_pass(), [{"lease_id": str(stale.pk), "action": "failed_stale_draft"}])
+        stale.refresh_from_db()
+        fresh.refresh_from_db()
+        self.assertEqual((stale.status, stale.error),
+                         (S.FAILED, "Setting up the settlement account was interrupted. Start a new agreement."))
+        self.assertEqual(stale.events.get().kind, "failed")
+        self.assertEqual(fresh.status, S.DRAFT)
+        self.assertEqual(lifecycle.bot_pass(), [])
+
+    # 9. sign-in needs Xaman only once after signing
+
+    def test_signin_finishes_without_asking_xaman_again(self):
+        from . import signing
+        req = signing.start_signin()
+        address = Wallet.create().address
+        self.signed(account=address, user_token="tok")
+        self.get_payload.reset_mock()
+        req = signing.refresh(req)
+        self.assertEqual(req.status, "done")
+        self.assertEqual(self.get_payload.call_count, 1)
+        self.assertEqual(Party.objects.get(address=address).xaman_user_token, "tok")
+
+    # 10. sign-in throttle
+
+    def test_signin_is_limited_to_ten_per_minute_per_session(self):
+        self.client.session.save()  # a session exists from the start, as after any page view
+        codes = [self.post("/api/auth/signin/").status_code for _ in range(11)]
+        self.assertEqual(codes, [200] * 10 + [409])
+        self.assertEqual(self.post("/api/auth/signin/").json()["code"], "too_many")
+        other = self.client_class()
+        self.assertEqual(other.post("/api/auth/signin/", "{}", content_type="application/json").status_code, 200)
+
+
+class SetupScriptTests(TestCase):
+    def test_old_database_is_detected(self):
+        import importlib.util
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+
+        from django.conf import settings
+        spec = importlib.util.spec_from_file_location("setup_script", Path(settings.BASE_DIR) / "scripts" / "setup.py")
+        setup = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(setup)
+        with tempfile.TemporaryDirectory() as folder:
+            setup.ROOT = Path(folder)
+            self.assertFalse(setup.old_database())  # no database yet
+            db = sqlite3.connect(Path(folder) / "db.sqlite3")
+            db.execute("CREATE TABLE django_migrations (app TEXT, name TEXT)")
+            db.execute("INSERT INTO django_migrations VALUES ('core', '0001_initial')")
+            db.commit()
+            self.assertFalse(setup.old_database())
+            db.execute("INSERT INTO django_migrations VALUES ('core', '0002_leases')")
+            db.commit()
+            db.close()
+            self.assertTrue(setup.old_database())

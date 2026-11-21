@@ -9,10 +9,13 @@ an existing .venv is reused and an existing .env is never overwritten.
 
 Steps: virtual environment -> pip install -> .env with a fresh secret key -> browser libraries
 (scripts/fetch_vendor.py) -> database migrations -> optionally bootstrap and preflight.
+
+If you ran an older version: delete db.sqlite3 and rerun with --bootstrap (the migrations were reset).
 """
 import argparse
 import os
 import secrets
+import sqlite3
 import subprocess
 import sys
 import venv
@@ -36,6 +39,20 @@ def run(*args):
     result = subprocess.run(command, cwd=ROOT)  # a list, never a shell string: paths with spaces are safe
     if result.returncode != 0:
         sys.exit(f"\nSetup stopped: `{' '.join(args)}` failed (exit code {result.returncode}). Fix the error above and rerun.")
+
+
+def old_database():
+    """True when db.sqlite3 comes from an older version whose migrations were later reset (core 0002_leases)."""
+    path = ROOT / "db.sqlite3"
+    if not path.exists():
+        return False
+    db = sqlite3.connect(path)
+    try:
+        return db.execute("SELECT 1 FROM django_migrations WHERE app = 'core' AND name = '0002_leases'").fetchone() is not None
+    except sqlite3.Error:  # no django_migrations table yet: a new database
+        return False
+    finally:
+        db.close()
 
 
 def make_env_file():
@@ -75,14 +92,18 @@ def main():
     say("Configuration (.env)")
     make_env_file()
     env = (ROOT / ".env").read_text(encoding="utf-8")
-    if "XAMAN_API_KEY=
-" in env or "XAMAN_API_KEY=" not in env:
+    keys = dict(line.split("=", 1) for line in env.splitlines() if "=" in line and not line.lstrip().startswith("#"))
+    if not keys.get("XAMAN_API_KEY", "").strip():
         print("NOTE: set XAMAN_API_KEY and XAMAN_API_SECRET in .env (free at https://apps.xumm.dev), or nobody can sign in.")
 
     say("Browser libraries (static/vendor)")
     run("scripts/fetch_vendor.py")
 
     say("Database")
+    if old_database():
+        sys.exit("\ndb.sqlite3 was made by an older version of safeDeposit, and the database migrations have been reset since.\n"
+                 "Delete db.sqlite3 and rerun this script with --bootstrap (or run manage.py migrate and manage.py bootstrap).\n"
+                 "It only holds Testnet data; the platform wallets are created again.")
     run("manage.py", "migrate")
 
     if args.bootstrap:
