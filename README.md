@@ -16,20 +16,22 @@ sequenceDiagram
     participant A as Arbiter
     participant E as Token escrow
     participant S as Settlement account (2 of 3, own key disabled)
-    participant B as Bot (anyone)
+    participant B as Platform bot
 
     T->>E: EscrowCreate (deposit, Condition, CancelAfter = lease end + grace)
     alt Normal end
-        B->>E: EscrowCancel after CancelAfter
+        B->>E: EscrowCancel after CancelAfter (any account may)
         E-->>T: full deposit back, no approval needed
     else Early move-out
-        T->>E: EscrowFinish with the fulfillment
+        T->>B: release (early move-out)
+        B->>E: EscrowFinish with the fulfillment
         E-->>S: deposit
         T->>S: sign payout (100% to tenant)
         L->>S: sign payout
         S-->>T: deposit back
     else Damage claim
-        L->>E: EscrowFinish with the fulfillment
+        L->>B: release (damage claim)
+        B->>E: EscrowFinish with the fulfillment
         E-->>S: deposit
         L->>S: propose and sign 850 / 150
         A->>S: sign
@@ -43,7 +45,7 @@ sequenceDiagram
 | Feature | Where |
 |---|---|
 | Token escrow (XLS-85) with an issued token | the deposit itself; `ledger/services.py` `create_escrow`, `finish_escrow`, `cancel_escrow` |
-| Crypto-conditions (PREIMAGE-SHA-256) | early release needs a secret; `ledger/conditions.py` |
+| Crypto-conditions (PREIMAGE-SHA-256) | early release needs a secret that stays on the server; `ledger/conditions.py` |
 | Multisig: SignerList (quorum 2 of 3) with the master key disabled | the per-lease settlement account |
 | Issued tokens and trust lines, `lsfAllowTrustLineLocking` | test EUR and USD |
 | Memos | evidence photos: only the SHA-256 is anchored (`safedeposit/evidence`) |
@@ -96,6 +98,10 @@ it to the tenant anyway.
 
 Needs Python 3.11 or newer and git. One script does the setup on Windows 11, macOS and Linux (virtual environment,
 packages, `.env` with a fresh secret key, browser libraries, database). It is safe to rerun.
+
+**Ran an older version before?** Delete `db.sqlite3` and rerun the setup with `--bootstrap` (or `manage.py migrate`
+and `manage.py bootstrap`): the database migrations were reset. The script stops with this hint when it finds an old
+database. It only held Testnet data.
 
 Windows 11 (PowerShell or Command Prompt):
 
@@ -169,9 +175,10 @@ B, plus a third account C for the arbiter:
 - Strict CSP on every page (`default-src 'self'`, no inline scripts or styles, WebSocket only to the configured test
   network). No third-party requests at run time, so no visitor IP reaches a CDN.
 - CSRF on every POST; session id rotated on sign-in; sign-in is a Xaman SignIn payload checked server side.
-- The escrow's release secret leaves the server only in `GET /api/leases/<id>/release-tx/`, for that lease's tenant or
-  landlord. Only platform wallet seeds (and Testnet settlement seeds, whose master key is disabled) are stored; they never leave
-  the server and are hidden in the admin.
+- The escrow's release secret (the fulfillment) never leaves the server: when the tenant or landlord releases the
+  deposit, the platform bot submits the EscrowFinish. Only platform wallet seeds (and Testnet settlement seeds, whose
+  master key is disabled) are stored; they never leave the server and are hidden in the admin.
+- Sign-in requests are rate limited (10 per minute per browser session).
 - Evidence photos are served only to the lease's three parties through an access-checked view (`nosniff`, sandboxed).
   File type is checked by signature, size capped at 5 MB, names replaced. Only the SHA-256 goes on the ledger.
 - Memos are public and permanent: ids and hashes only, never names.

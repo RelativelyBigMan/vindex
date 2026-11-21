@@ -15,7 +15,7 @@ A web app that protects rental security deposits with native XRP Ledger features
 3. The tenant creates a token escrow (XLS-85) for the deposit: Account = tenant, Destination = settlement account, Amount = deposit in an issued token (our test EUR or USD), Condition = PREIMAGE-SHA-256 crypto-condition, CancelAfter = lease end + grace period. No FinishAfter.
 4. Outcomes:
    - Normal end: after CancelAfter our bot submits EscrowCancel (any account may) and the deposit returns to the tenant automatically.
-   - Early move-out or damage claim: before CancelAfter, the tenant or landlord submits EscrowFinish with the fulfillment; the deposit moves to the settlement account.
+   - Early move-out or damage claim: before CancelAfter, the tenant or landlord asks for the release and the platform bot submits EscrowFinish with the fulfillment (which never leaves the server); the deposit moves to the settlement account.
    - Settlement: any 2 of tenant, landlord and arbiter sign payouts from the settlement account (e.g. 100% to the tenant, or 850 / 150).
 
 ## Stack (don't change without asking)
@@ -64,7 +64,8 @@ config/ (settings, urls) | core/ (models, agreements.py, signing.py, faucet.py, 
 - POST /api/proposals/<id>/sign/ -> Xaman multisign request; POST /api/proposals/<id>/retry/ -> submit approved payouts again
 - POST /api/leases/<id>/evidence/ (multipart: file, kind); GET /api/evidence/<id>/file/ (parties only); POST /api/evidence/<id>/anchor/ -> Xaman request
 - Errors: {error: friendly message, code: engine result or internal code} with HTTP 400 / 401 / 409 / 500.
-- Action names used in 'actions': lock_deposit, release_early, claim_damage, propose, sign:<proposal_id>, upload_evidence, share_verify (plus agreement actions: accept, approve_arbiter, cancel).
+- Action names used in 'actions' (lifecycle.allowed_actions): lock_deposit, release_early, claim_damage, propose, sign:<proposal_id>, retry:<proposal_id>, upload_evidence, share_verify, cancel; while PENDING_ACCEPTANCE: change_arbiter, approve_arbiter, cancel. Accepting is done through the invite link, not an action.
+- POST /api/invites/<token>/accept/ takes optional {expected_arbiter: address or ""}; a mismatch with the current arbiter -> 409 terms_changed. POST /api/auth/signin/ is limited to 10 per minute per session (409 too_many).
 
 ## XRPL rules and gotchas
 - Ripple time = seconds since 2000-01-01 UTC (xrpl.utils.datetime_to_ripple_time). Compare deadlines with the latest validated ledger's close time (services.ledger_close_time), never the local clock. Wait about 10 s past a deadline before submitting.
@@ -76,7 +77,7 @@ config/ (settings, urls) | core/ (models, agreements.py, signing.py, faucet.py, 
 - Releases are submitted by the bot account (any account may submit EscrowFinish), so the fulfillment never leaves the server and is never sent to a browser. EscrowCancel for expired or cancelled-then-locked leases is also the bot's.
 - Multisigned transactions: set sequence explicitly and last_ledger_sequence = latest validated + 1000 (signatures can arrive minutes apart), autofill the fee with signers_count=2, sign with sign(tx, wallet, multisign=True), combine with multisign(tx, [signed, ...]), submit. tefMAX_LEDGER means expired: rebuild and re-sign.
 - Two transactions from the same account must not be built at the same time (same Sequence). services.submit() takes a per-address lock; always send through it.
-- Never log or render fulfillment_hex outside the tenant / landlord release flow. Never show seeds anywhere (the admin hides them).
+- Never log, render or send fulfillment_hex anywhere: only the bot's EscrowFinish uses it. Never show seeds anywhere (the admin hides them).
 - Translate engine results into friendly errors (ledger/errors.py): tecNO_PERMISSION, tecNO_LINE, tecUNFUNDED_PAYMENT, tecNO_DST, tecCRYPTOCONDITION_ERROR, tefBAD_QUORUM, tefMAX_LEDGER, terPRE_SEQ, temDISABLED.
 
 ## Working rules
@@ -93,14 +94,14 @@ config/ (settings, urls) | core/ (models, agreements.py, signing.py, faucet.py, 
   - Prepared transactions and signatures are plain XRPL JSON dicts (`prepare_payout_txs`, `sign_prepared`, `execute_multisigned`); they can go straight into the JSON fields.
   - `finish_escrow` raises LedgerError `escrow_expired`, `cancel_escrow` raises `escrow_not_expired`, `prepare_payout_txs` raises `payout_sum_mismatch` / `nothing_to_pay`; `execute_multisigned` raises `tefBAD_QUORUM`, `signature_mismatch` or `ExpiredPreparedTx`.
   - `services.submit()` no longer uses xrpl-py's submit_and_wait: it fails at once on tem / tef / tel results instead of polling until LastLedgerSequence.
-  - `build_escrow_finish` returns the fulfillment inside the tx JSON: tenant / landlord only, never log it.
+  - `build_escrow_finish` returns the fulfillment inside the tx JSON: server side only, never log or send it.
   - Memos are public and permanent: anchor hashes and ids only, never names or other personal data.
 - Patch 3 (lifecycle, API, bot): done 2026-11-20.
 - Patches 4-7 (UI, wallet + verify, evidence + credential, demo stage + README): done 2026-11-20, in one session. Notes:
   - Pages are shells (core/views.py); static/js/pages/*.js render from the API. Shared pieces: ui.js (el, toast, busy, fill), parts.js, actions.js, splitform.js. Never innerHTML; never pass null to replaceChildren (use ui.fill).
   - runserver runs with --noreload in .claude/launch.json: restart it after Python changes. Browsers cache ES modules: hard-reload after JS changes.
   - CSP is set in core/middleware.py; a new external host needs an entry there (currently only the network's WebSocket).
-    - Lease has title (off-chain label) and scenario (A/B/C, set by demo_scenarios; the stage view reads the newest of each).
+    - Lease has title (an off-chain label, never sent to the ledger).
   - Countdowns keep the earliest computed deadline: slow poll answers must never move it later.
-  - Not done: Batch payouts (amendment off on Testnet), Crossmark, a click-through with the real GemWallet extension.
+  - Not done: Batch payouts (amendment off on Testnet).
 - Real accounts with Xaman (branch real-accounts-testnet): done 2026-11-21. Spec and plan in docs/superpowers/. Demo personas, GemWallet and the arbiter credential are removed; manage.py bootstrap (was bootstrap_demo) creates platform wallets only; preflight uses throw-away wallets.
