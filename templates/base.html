@@ -44,7 +44,6 @@
     </form>
   </dialog>
 
-  {% if escrow_config.demo_mode %}{% include "partials/_demo_bar.html" %}{% endif %}
 
   {# Server-side config passed safely to JS. json_script escapes the content so it can't break out of the tag (XSS-safe). #}
   {{ escrow_config|default_if_none:""|json_script:"escrow-config" }}

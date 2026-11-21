@@ -1,4 +1,5 @@
 """Lifecycle and API tests. Every ledger call is mocked: nothing here touches the network."""
+import json
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -15,7 +16,7 @@ from ledger.errors import ExpiredPreparedTx, LedgerError
 
 from . import lifecycle
 from .lifecycle import InvalidInput, InvalidTransition
-from .models import Currency, Invite, Lease, Party, PlatformWallet, XamanRequest
+from .models import Currency, Invite, Lease, Party, PlatformWallet, SettlementProposal, XamanRequest
 
 S = Lease.Status
 MOCKED = [
@@ -856,3 +857,153 @@ class FaucetTests(LedgerMockedTestCase):
         self.assertEqual(data["activated"], True)
         self.assertEqual(data["trust_lines"], {"EUR": True})
         self.assertEqual(data["available"], {"activate": False, "tokens:EUR": True})
+
+
+class ApiTests(LedgerMockedTestCase):
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(xaman, "create_payload", return_value={"uuid": "x-1", "deeplink": "https://xumm.app/sign/x-1", "pushed": False}).start()
+        self.get_payload = mock.patch.object(xaman, "get_payload").start()
+        self.get_payload.return_value = {"status": "open", "account": "", "hex": "", "txid": "", "user_token": ""}
+
+    def login(self, party):
+        session = self.client.session
+        session["party_id"] = party.pk
+        session.save()
+
+    def post(self, path, data=None):
+        return self.client.post(path, json.dumps(data or {}), content_type="application/json")
+
+    def test_signed_out_visitors(self):
+        self.assertEqual(self.client.get("/api/me/").json(), {"signed_in": False})
+        response = self.client.get("/api/leases/")
+        self.assertEqual((response.status_code, response.json()["code"]), (401, "signed_out"))
+        page = self.client.get("/leases/")
+        self.assertEqual((page.status_code, page["Location"]), (302, "/?next=/leases/"))
+        self.assertEqual(self.client.get("/").status_code, 200)
+
+    def test_signin_flow_logs_in_only_the_browser_that_started_it(self):
+        started = self.post("/api/auth/signin/").json()
+        self.assertTrue(started["qr"].startswith("data:image/svg+xml"))
+        address = Wallet.create().address
+        self.get_payload.return_value = {"status": "signed", "account": address, "hex": "", "txid": "", "user_token": ""}
+        other = self.client_class()
+        self.assertEqual(other.get(f"/api/xaman/requests/{started['request_id']}/").status_code, 404)
+        done = self.client.get(f"/api/xaman/requests/{started['request_id']}/").json()
+        self.assertEqual((done["status"], done["signed_in"], done["needs_name"]), ("done", True, True))
+        me = self.client.get("/api/me/").json()
+        self.assertEqual((me["address"], me["needs_name"]), (address, True))
+        self.post("/api/me/", {"display_name": "  Giulia   R. "})
+        self.assertEqual(self.client.get("/api/me/").json()["name"], "Giulia R.")
+        self.post("/api/auth/signout/")
+        self.assertEqual(self.client.get("/api/me/").json(), {"signed_in": False})
+
+    def test_csrf_is_enforced_on_posts(self):
+        client = self.client_class(enforce_csrf_checks=True)
+        self.assertEqual(client.post("/api/auth/signin/", "{}", content_type="application/json").status_code, 403)
+
+    def test_create_agreement_and_accept_by_invite(self):
+        self.login(self.tenant)
+        created = self.post("/api/leases/", {"role": "tenant", "title": "Flat 3", "currency": "EUR", "amount": "1000",
+                                             "end_date": (timezone.now() + timedelta(days=60)).date().isoformat(), "grace_minutes": 60,
+                                             "arbiter_address": self.arbiter.address})
+        self.assertEqual(created.status_code, 201)
+        lease_id = created.json()["lease_id"]
+        state = self.client.get(f"/api/leases/{lease_id}/").json()
+        self.assertEqual(state["status"], "PENDING_ACCEPTANCE")
+        invites = {i["role"]: i for i in state["invites"]}
+        self.assertEqual(set(invites), {"landlord", "arbiter"})
+        token = invites["landlord"]["url"].rstrip("/").rsplit("/", 1)[-1]
+
+        self.login(self.landlord)
+        self.assertEqual(self.client.get(f"/api/leases/{lease_id}/").status_code, 404)  # not a party yet
+        terms = self.client.get(f"/api/invites/{token}/").json()
+        self.assertEqual((terms["role"], terms["lease"]["amount"]), ("landlord", "1000"))
+        self.assertEqual(self.post(f"/api/invites/{token}/accept/").json(), {"lease_id": lease_id})
+        landlord_view = self.client.get(f"/api/leases/{lease_id}/").json()
+        self.assertEqual(landlord_view["role"], "landlord")
+
+    def test_create_agreement_validates_input(self):
+        self.login(self.tenant)
+        base = {"role": "tenant", "currency": "EUR", "amount": "1000", "end_in_minutes": 120, "grace_minutes": 5}
+        for change, code in (({"role": "arbiter"}, "bad_role"), ({"currency": "GBP"}, "bad_currency"),
+                             ({"amount": "0"}, "bad_amount"), ({"end_in_minutes": 1, "grace_minutes": 0}, "bad_end"),
+                             ({"arbiter_address": "nope"}, "bad_address")):
+            with self.subTest(code=code):
+                response = self.post("/api/leases/", {**base, **change})
+                self.assertEqual((response.status_code, response.json()["code"]), (400, code))
+
+    def test_lock_starts_a_xaman_request_for_the_tenant_only(self):
+        lease = self.make_lease(S.SETTLEMENT_READY)
+        self.ledger.build_escrow_create.return_value = {"TransactionType": "EscrowCreate", "Account": self.tenant.address}
+        self.login(self.landlord)
+        self.assertEqual(self.post(f"/api/leases/{lease.pk}/escrow/").status_code, 409)
+        self.login(self.tenant)
+        started = self.post(f"/api/leases/{lease.pk}/escrow/").json()
+        self.assertEqual((started["purpose"], started["status"]), ("escrow_create", "open"))
+        self.login(self.landlord)
+        self.assertEqual(self.client.get(f"/api/xaman/requests/{started['request_id']}/").status_code, 404)
+
+    def test_release_is_submitted_by_the_bot(self):
+        lease = self.make_lease(S.ACTIVE)
+        self.login(self.tenant)
+        state = self.post(f"/api/leases/{lease.pk}/release/", {"reason": "early_move_out"}).json()
+        self.assertEqual(state["status"], "IN_SETTLEMENT")
+        self.assertEqual(self.ledger.finish_escrow.call_args.args[0].address, PlatformWallet.objects.get(role="bot").address)
+
+    def test_proposal_sign_walks_through_payouts_then_reports_done(self):
+        lease = self.make_lease(S.IN_SETTLEMENT)
+        self.login(self.landlord)
+        proposal_id = self.post(f"/api/leases/{lease.pk}/proposals/", {"tenant_amount": "850", "landlord_amount": "150"}).json()["proposal_id"]
+        first = self.post(f"/api/proposals/{proposal_id}/sign/").json()
+        self.assertEqual(first["purpose"], "payout_sign")
+        proposal = SettlementProposal.objects.get(pk=proposal_id)
+        lifecycle.add_signature(proposal, self.landlord, 0, "B0")
+        lifecycle.add_signature(proposal, self.landlord, 1, "B1")
+        self.assertTrue(self.post(f"/api/proposals/{proposal_id}/sign/").json()["done"])
+
+    def test_secrets_never_appear_in_lease_json_or_pages(self):
+        lease = self.make_lease(S.ACTIVE)
+        self.login(self.tenant)
+        body = self.client.get(f"/api/leases/{lease.pk}/").content.decode() + self.client.get(f"/leases/{lease.pk}/").content.decode()
+        for secret in (lease.fulfillment_hex, lease.settlement_seed or "sSettlementSeed", PlatformWallet.objects.get(role="bot").seed):
+            self.assertNotIn(secret, body)
+
+    def test_faucet_endpoints(self):
+        self.login(self.tenant)
+        self.ledger.account_exists.return_value = False
+        self.ledger.get_balances.return_value = {"XRP": Decimal("500")}
+        self.ledger.fund_xrp.return_value = "FUNDHASH"
+        self.assertEqual(self.post("/api/faucet/activate/").json()["tx_hash"], "FUNDHASH")
+        self.assertEqual(self.post("/api/faucet/trustline/", {"currency": "EUR"}).json()["purpose"], "trustset")
+        self.assertEqual(self.post("/api/faucet/tokens/", {"currency": "XXX"}).json()["code"], "bad_currency")
+
+    def test_pages_render_with_a_strict_csp(self):
+        lease = self.make_lease(S.ACTIVE)
+        self.login(self.tenant)
+        for path in ("/", "/leases/", "/leases/new/", f"/leases/{lease.pk}/", f"/verify/{lease.pk}/", "/legal/terms/"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("script-src 'self'", response["Content-Security-Policy"])
+        for gone in ("/demo/", "/demo/stage/", "/arbiter/", "/api/demo/personas/"):
+            self.assertEqual(self.client.get(gone).status_code, 404)
+
+    def test_evidence_upload_checks_the_file(self):
+        lease = self.make_lease(S.ACTIVE)
+        self.login(self.tenant)
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+        bad = self.client.post(f"/api/leases/{lease.pk}/evidence/", {"kind": "damage", "file": SimpleUploadedFile("x.png", b"GIF89a")})
+        self.assertEqual(bad.json()["code"], "bad_file_type")
+        with self.settings(MEDIA_ROOT=self._media()):
+            ok = self.client.post(f"/api/leases/{lease.pk}/evidence/", {"kind": "damage", "file": SimpleUploadedFile("x.png", png)})
+        self.assertEqual(ok.status_code, 201)
+        self.assertEqual(ok.json()["anchor_tx_hash"], "")
+
+    def _media(self):
+        import tempfile, shutil
+        path = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
