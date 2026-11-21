@@ -2,8 +2,27 @@
  * Direct reads from the XRP Ledger in the browser (xrpl.js, self-hosted), used where the point is
  * NOT to trust our server: the public verify page and the evidence check.
  */
-import { loadVendor } from "./wallet.js";
 import { config } from "./session.js";
+
+const VENDOR = { xrpl: "vendor/xrpl-5.3.0.min.js" };
+const loading = new Map();
+
+/** Load a self-hosted classic script once (CSP: script-src 'self'). */
+export function loadVendor(name) {
+  if (!loading.has(name)) {
+    loading.set(name, new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = (document.body.dataset.static || "/static/") + VENDOR[name];
+      script.onload = () => resolve();
+      script.onerror = () => {
+        loading.delete(name);
+        reject(new Error(`Couldn't load ${VENDOR[name]}. Run scripts/fetch_vendor.py on the server.`));
+      };
+      document.head.append(script);
+    }));
+  }
+  return loading.get(name);
+}
 
 /** Run fn(request) against a public server of the configured test network, then disconnect. */
 export async function withLedger(fn) {

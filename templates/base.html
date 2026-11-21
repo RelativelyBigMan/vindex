@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="{% static 'css/global.css' %}">
   {% block extra_css %}{% endblock %}
 </head>
-<body class="{% block body_class %}{% endblock %}{% if escrow_config.demo_mode %} has-demo-bar{% endif %}" data-static="{% static '' %}">
+<body class="{% block body_class %}{% endblock %}" data-static="{% static '' %}">
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="scroll-progress" aria-hidden="true"></div>
 
@@ -30,20 +30,26 @@
   {# Transient notices. JS writes them with textContent, never innerHTML. #}
   <div class="toasts" data-toasts role="status" aria-live="polite"></div>
 
-  {# Asked once when a browser wallet connects for the first time. #}
-  <dialog class="dialog" data-role-dialog aria-labelledby="role-dialog-title">
-    <form method="dialog">
-      <h2 id="role-dialog-title">Who is this wallet?</h2>
-      <p class="muted">Choose the part this wallet plays. It can't be changed later for this address.</p>
-      <div class="actions mt-4">
-        <button class="btn btn--tint-tenant" value="tenant">Tenant</button>
-        <button class="btn btn--tint-owner" value="landlord">Landlord</button>
-        <button class="btn btn--tint-arbiter" value="arbiter">Arbiter</button>
-      </div>
-      <div class="dialog__foot"><button class="btn btn--ghost btn--sm" value="">Cancel</button></div>
-    </form>
+  {# Xaman sign requests: QR code (rendered by our server) and a deep link for phones. Filled by static/js/xaman.js. #}
+  <dialog class="dialog" data-xaman-dialog aria-labelledby="xaman-title">
+    <h2 id="xaman-title" data-xaman-title>Sign in Xaman</h2>
+    <p class="muted" data-xaman-text>Scan the code with the Xaman app, or open it on this phone.</p>
+    <img class="qr" data-xaman-qr alt="QR code for the Xaman sign request" width="240" height="240">
+    <p class="actions"><a class="btn btn--primary" data-xaman-link target="_blank" rel="noopener">Open in Xaman</a></p>
+    <p class="small" data-xaman-status role="status" aria-live="polite"></p>
+    <div class="dialog__foot"><button type="button" class="btn btn--ghost btn--sm" data-xaman-cancel>Cancel</button></div>
   </dialog>
 
+  {# Asked once after the first sign-in. #}
+  <dialog class="dialog" data-name-dialog aria-labelledby="name-title">
+    <form method="dialog" data-name-form>
+      <h2 id="name-title">What should the other parties call you?</h2>
+      <p class="muted">Shown to the tenant, landlord or arbiter of your agreements. Never written to the ledger.</p>
+      <div class="field mt-4"><label for="id_display_name">Your name</label>
+        <input id="id_display_name" name="display_name" maxlength="80" required autocomplete="name"></div>
+      <div class="actions mt-4"><button class="btn btn--primary" value="save">Save</button></div>
+    </form>
+  </dialog>
 
   {# Server-side config passed safely to JS. json_script escapes the content so it can't break out of the tag (XSS-safe). #}
   {{ escrow_config|default_if_none:""|json_script:"escrow-config" }}

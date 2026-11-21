@@ -957,3 +957,7 @@ details[open] > summary { margin-bottom: var(--space-3); }
   .spinner, .checklist li.is-current::before { animation-duration: 1.2s !important; animation-iteration-count: infinite !important; }
   .skeleton { animation: none; }
 }
+
+/* Xaman sign request dialog */
+.qr { display: block; width: 240px; height: 240px; margin: 1rem auto; background: #fff; border-radius: 8px; }
+.qr[hidden] { display: none; }

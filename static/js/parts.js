@@ -25,15 +25,6 @@ export function setupChecklist(state) {
   }));
 }
 
-export function verifiedBadge(party) {
-  if (party.role !== "arbiter") return null;
-  if (party.verified_arbiter === true) {
-    return el("span", { class: "badge badge--success", title: "Credential issued by the safeDeposit Mediation Registry and accepted by this account. Read live from the ledger.", text: "Verified arbiter" });
-  }
-  if (party.verified_arbiter === false) return el("span", { class: "badge badge--warning", title: "This account holds no accepted arbiter credential on the ledger.", text: "Unverified" });
-  return null;
-}
-
 export function partyCard(party, me) {
   const isMe = Boolean(me) && me.party_id === party.party_id;
   return el("article", { class: `card party party--${party.role}` },
@@ -41,7 +32,7 @@ export function partyCard(party, me) {
       isMe && el("span", { class: "badge badge--info party__you", text: "You" })),
     el("p", { class: "party__name", text: party.name }),
     el("p", { class: "mono small", title: party.address, text: shortAddress(party.address) }),
-    el("div", { class: "row" }, verifiedBadge(party), copyButton(party.address, "Copy address"), extLink(party.explorer_url, "Explorer", { class: "small" })));
+    el("div", { class: "row" }, copyButton(party.address, "Copy address"), extLink(party.explorer_url, "Explorer", { class: "small" })));
 }
 
 export function splitBar(tenantAmount, landlordAmount, code, total) {
@@ -63,12 +54,13 @@ const PROPOSAL_STATUS = { OPEN: ["warning", "Open"], EXECUTED: ["success", "Paid
  * @param {object} proposal  from the lease state
  * @param {object} state     the lease state it belongs to
  * @param {(button: HTMLButtonElement, proposal: object) => void} [onApprove]  shown only when the API allows it
+ * @param {(button: HTMLButtonElement, proposal: object) => void} [onRetry]  shown only when the API offers a payout retry
  */
-export function proposalCard(proposal, state, onApprove) {
+export function proposalCard(proposal, state, onApprove, onRetry) {
   const [tone, label] = PROPOSAL_STATUS[proposal.status] || ["", proposal.status];
   const total = fromMicro((toMicro(proposal.tenant_amount) ?? 0n) + (toMicro(proposal.landlord_amount) ?? 0n));
   const canApprove = onApprove && state.actions.includes(`sign:${proposal.id}`);
-  const retry = proposal.signatures_count >= proposal.signatures_required;
+  const canRetry = onRetry && state.actions.includes(`retry:${proposal.id}`);
   const names = (list) => list.map((p) => `${p.name} (${p.role})`).join(", ");
   return el("article", { class: "card" },
     el("div", { class: "row row--between" },
@@ -87,10 +79,10 @@ export function proposalCard(proposal, state, onApprove) {
     proposal.executed.length > 0 && el("p", { class: "small mt-4" }, "Payouts: ",
       proposal.executed.map((tx, i) => [i > 0 && ", ", extLink(tx.explorer_url, shortHash(tx.tx_hash), { class: "mono" })])),
     canApprove && el("div", { class: "actions mt-4" },
-      el("button", {
-        type: "button", class: "btn btn--primary", on: { click: (event) => onApprove(event.currentTarget, proposal) },
-        title: "Signed on the server with this persona's Testnet key",
-      }, retry ? "Retry the payout" : "Approve this split", el("span", { class: "small", text: " (demo key)" }))));
+      el("button", { type: "button", class: "btn btn--primary", on: { click: (event) => onApprove(event.currentTarget, proposal) } },
+        proposal.payouts_count > 1 ? `Approve in Xaman (${proposal.payouts_count} signatures)` : "Approve in Xaman")),
+    canRetry && el("div", { class: "actions mt-4" },
+      el("button", { type: "button", class: "btn", on: { click: (event) => onRetry(event.currentTarget, proposal) } }, "Retry the payout")));
 }
 
 export function eventItem(event, isNew = false) {

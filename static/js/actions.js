@@ -1,67 +1,53 @@
 /**
- * Lease actions. Each one works for both kinds of identity:
- *  - a demo persona: the server signs with the persona's Testnet key ({mode: "demo"});
- *  - a browser wallet: the server builds the unsigned transaction, the wallet signs and submits it,
- *    and the server then checks the validated transaction on the ledger ({mode: "wallet", tx_hash}).
+ * Lease actions. Every signature happens in the user's Xaman app; the server builds the
+ * transaction, Xaman signs it, and the server checks the result on the ledger.
  */
-import { api, get, post } from "./api.js";
+import { api, post } from "./api.js";
 import { readMemo, sha256Hex, withLedger, optional } from "./ledger.js";
-import { config, currentMe } from "./session.js";
-import { registerWhenValidated, walletFor } from "./wallet.js";
+import { loadMe } from "./session.js";
+import { signSteps, signWithXaman } from "./xaman.js";
 
-const isDemo = (me) => !me || me.wallet_type === "demo";
 export const EVIDENCE_MEMO = "safedeposit/evidence";
 
-export async function lockDeposit(leaseId, me = currentMe()) {
-  if (isDemo(me)) return post(`/api/leases/${leaseId}/escrow/`, { mode: "demo" });
-  const wallet = await walletFor(me);
-  const { tx } = await get(`/api/leases/${leaseId}/escrow-tx/`);
-  const { hash } = await wallet.signAndSubmit(tx);
-  return registerWhenValidated(() => post(`/api/leases/${leaseId}/escrow/`, { mode: "wallet", tx_hash: hash }, { quiet: true }));
+export async function signIn() {
+  const done = await signWithXaman(() => post("/api/auth/signin/"), { title: "Sign in with Xaman" });
+  await loadMe(true);
+  return done;
 }
 
-/** @param {"early_move_out"|"damage_claim"} reason */
-export async function releaseDeposit(leaseId, reason, me = currentMe()) {
-  if (isDemo(me)) return post(`/api/leases/${leaseId}/release/`, { reason, mode: "demo" });
-  const wallet = await walletFor(me);
-  // This transaction carries the escrow's release secret. It goes from our server straight into the wallet.
-  const { tx } = await get(`/api/leases/${leaseId}/release-tx/`);
-  const { hash } = await wallet.signAndSubmit(tx);
-  return registerWhenValidated(() => post(`/api/leases/${leaseId}/release/`, { reason, mode: "wallet", tx_hash: hash }, { quiet: true }));
+export async function lockDeposit(leaseId) {
+  await signWithXaman(() => post(`/api/leases/${leaseId}/escrow/`), { title: "Lock the deposit" });
+}
+
+/** @param {"early_move_out"|"damage_claim"} reason  The bot submits the release; no signature needed. */
+export function releaseDeposit(leaseId, reason) {
+  return post(`/api/leases/${leaseId}/release/`, { reason });
 }
 
 export async function proposeSplit(leaseId, tenantAmount, landlordAmount, reason) {
   const result = await post(`/api/leases/${leaseId}/proposals/`, { tenant_amount: tenantAmount, landlord_amount: landlordAmount, reason });
-  return result.lease;
+  return result;
 }
 
 export async function approveSplit(proposalId) {
-  return (await post(`/api/proposals/${proposalId}/sign/`)).lease;
+  return (await signSteps(`/api/proposals/${proposalId}/sign/`, { title: "Approve the split" })).lease;
 }
 
-/** The wallet adds a trust line for the deposit token (needed before it can hold or lock it). */
-export async function addTrustLine(currency, me = currentMe()) {
-  const wallet = await walletFor(me);
-  const issuer = config.currencies.find((c) => c.code === currency)?.issuer;
-  if (!issuer) throw new Error("Unknown token.");
-  return wallet.signAndSubmit({
-    TransactionType: "TrustSet", Account: me.address,
-    LimitAmount: { currency, issuer, value: "1000000000" },
-  });
+export async function retryPayout(proposalId) {
+  return (await post(`/api/proposals/${proposalId}/retry/`)).lease;
 }
 
-export async function uploadEvidence(leaseId, form, me = currentMe()) {
-  let item = await api(`/api/leases/${leaseId}/evidence/`, { method: "POST", form });
-  if (!item.anchor_tx_hash && !isDemo(me)) item = await anchorEvidence(item, me);
-  return item;
+export async function addTrustLine(currency) {
+  await signWithXaman(() => post("/api/faucet/trustline/", { currency }), { title: `Add the ${currency} trust line` });
 }
 
-export async function anchorEvidence(item, me = currentMe()) {
-  if (isDemo(me)) return post(`/api/evidence/${item.id}/anchor/`, { mode: "demo" });
-  const wallet = await walletFor(me);
-  const { tx } = await get(`/api/evidence/${item.id}/anchor-tx/`);
-  const { hash } = await wallet.signAndSubmit(tx);
-  return registerWhenValidated(() => post(`/api/evidence/${item.id}/anchor/`, { mode: "wallet", tx_hash: hash }, { quiet: true }));
+export async function uploadEvidence(leaseId, form) {
+  const item = await api(`/api/leases/${leaseId}/evidence/`, { method: "POST", form });
+  return anchorEvidence(item).then(() => item, (error) => ({ ...item, anchor_error: error.message }));
+}
+
+export async function anchorEvidence(item) {
+  await signWithXaman(() => post(`/api/evidence/${item.id}/anchor/`), { title: "Anchor the photo" });
 }
 
 /**
