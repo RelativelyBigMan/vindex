@@ -11,3 +11,4 @@ media/
 __pycache__/
 *.pyc
 staticfiles/
+spike-*.html
