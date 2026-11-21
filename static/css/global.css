@@ -299,10 +299,17 @@ a:hover { background-size: 100% 1px; }
   background: none;
 }
 .brand__mark {
-  width: 1.375rem; height: 1.375rem;
-  color: var(--color-text);
+  width: auto; height: 1.875rem;
   transition: transform 500ms var(--ease-out);
 }
+/* Vindex logo colours: teal shield, white V, navy wordmark (light text on dark themes). */
+.brand__shield { fill: #115e58; }
+.brand__v { fill: none; stroke: #fff; stroke-width: 76; stroke-linecap: round; stroke-linejoin: round; }
+.brand__name { text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .brand__name { color: var(--color-text); }
+}
+:root[data-theme="dark"] .brand__name { color: var(--color-text); }
 .brand:hover .brand__mark { transform: rotate(-12deg) scale(1.08); }
 .brand:hover { background: none; }
 
@@ -752,7 +759,9 @@ legend::before { content: counter(section) "\2003"; }   /* numbered like \sectio
   .page { width: 100%; margin: 0; padding: var(--space-12) var(--space-4) var(--space-16); box-shadow: none; }
   /* Row 1: logo + wallet controls. Row 2: nav. */
   .site-header__inner { justify-content: space-between; column-gap: var(--space-2); }
-  .brand { font-size: 1.1875rem; }
+  .brand { font-size: 1.0625rem; }
+  .brand__mark { height: 1.5rem; }
+  .brand__name { letter-spacing: 0.04em; }
   .wallet { margin-left: auto; }
   .wallet .btn--sm { padding-inline: var(--space-3); font-size: 0.875rem; }
   .sound-toggle { width: 2.25rem; height: 2.25rem; }
