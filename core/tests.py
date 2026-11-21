@@ -1,15 +1,12 @@
 """Lifecycle and API tests. Every ledger call is mocked: nothing here touches the network."""
-import json
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock
 
 from django.core.cache import cache
-from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
-from xrpl.core import keypairs
 from xrpl.utils import datetime_to_ripple_time
 from xrpl.wallet import Wallet
 
@@ -18,7 +15,7 @@ from ledger.errors import ExpiredPreparedTx, LedgerError
 
 from . import lifecycle
 from .lifecycle import InvalidInput, InvalidTransition
-from .models import Currency, Lease, LedgerEvent, Party, PlatformWallet, SettlementProposal
+from .models import Currency, Lease, Party, PlatformWallet
 
 S = Lease.Status
 MOCKED = [
@@ -397,6 +394,14 @@ class ProposalTests(LedgerMockedTestCase):
         proposal = self.approve(self.approve(proposal, self.tenant), self.landlord)
         self.assertEqual(proposal.status, "EXECUTED")
 
+    def test_after_a_half_paid_split_expires_only_unpaid_payouts_need_signatures(self):
+        proposal = self.approve(lifecycle.propose(self.lease, self.landlord, "850", "150"), self.landlord)
+        self.ledger.execute_multisigned.side_effect = ["PAY1", ExpiredPreparedTx()]
+        proposal = self.approve(proposal, self.arbiter)
+        self.assertEqual((proposal.status, proposal.executed_hashes), ("OPEN", ["PAY1"]))
+        self.assertEqual(lifecycle.next_unsigned_index(proposal, self.tenant), 1)
+        self.assertEqual(lifecycle.complete_signers(proposal), [])
+
     def test_half_paid_split_can_be_retried_without_paying_twice(self):
         proposal = self.approve(lifecycle.propose(self.lease, self.landlord, "850", "150"), self.landlord)
         self.ledger.execute_multisigned.side_effect = ["PAY1", LedgerError("network_error", "offline")]
@@ -460,6 +465,8 @@ class ActionsTests(LedgerMockedTestCase):
 
 
 class CancelAndExpiryTests(LedgerMockedTestCase):
+    HASH = "AB" * 32
+
     def test_pending_agreement_past_its_return_date_is_cancelled_by_the_bot(self):
         lease = self.make_lease(S.PENDING_ACCEPTANCE)
         self.ledger.ledger_close_time.side_effect = lambda *a, **k: lease.cancel_after + timedelta(minutes=1)
@@ -470,3 +477,24 @@ class CancelAndExpiryTests(LedgerMockedTestCase):
     def test_cancel_only_before_the_deposit_is_locked(self):
         self.assertTrue(lifecycle.cancel(self.make_lease(S.SETTLEMENT_READY), "Stopped"))
         self.assertFalse(lifecycle.cancel(self.make_lease(S.ACTIVE), "Stopped"))
+
+    def test_cancel_refused_when_the_deposit_was_just_locked(self):
+        lease = self.make_lease(S.SETTLEMENT_READY)
+        self.ledger.find_escrow_create_hash.return_value = "AB" * 32
+        self.ledger.get_transaction.return_value = WalletEscrowVerificationTests.found(self, lease)
+        self.assertFalse(lifecycle.cancel(lease, "Stopped"))
+        lease.refresh_from_db()
+        self.assertEqual((lease.status, lease.escrow_sequence), (S.ACTIVE, 77))
+
+    def test_bot_returns_an_escrow_found_for_a_cancelled_lease_once(self):
+        lease = self.make_lease(S.CANCELLED)
+        self.ledger.ledger_close_time.side_effect = lambda *a, **k: lease.cancel_after + timedelta(minutes=1)
+        self.ledger.find_escrow_create_hash.return_value = "AB" * 32
+        self.ledger.get_transaction.return_value = WalletEscrowVerificationTests.found(self, lease)
+        results = lifecycle.bot_pass()
+        self.assertEqual([r["action"] for r in results], ["returned_after_cancel"])
+        self.ledger.cancel_escrow.assert_called_once()
+        self.assertEqual(self.ledger.cancel_escrow.call_args.args[1:3], (self.tenant.address, 77))
+        self.assertEqual(lease.events.filter(kind="returned").count(), 1)
+        self.assertEqual(lifecycle.bot_pass(), [])
+        self.ledger.cancel_escrow.assert_called_once()

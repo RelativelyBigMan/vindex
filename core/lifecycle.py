@@ -349,7 +349,7 @@ def _payouts(lease, tenant_amount, landlord_amount):
 
 
 def propose(lease, party, tenant_amount, landlord_amount, reason=""):
-    """Propose how to split the deposit. Replaces any open proposal; the proposer's approval is added at once."""
+    """Propose how to split the deposit. Replaces any open proposal. Nobody's approval is added: each party signs for themselves."""
     with _exclusive(lease):
         lease.refresh_from_db()
         return _propose(lease, party, tenant_amount, landlord_amount, reason)
@@ -392,14 +392,18 @@ def _propose(lease, party, tenant_amount, landlord_amount, reason):
 
 
 def complete_signers(proposal):
-    """Party ids (strings) that signed every prepared payout."""
-    return [key for key, signed in proposal.signatures.items() if signed and len(signed) == len(proposal.prepared_txs) and all(signed)]
+    """Party ids (strings) that signed every payout not yet paid (earlier ones are already on the ledger)."""
+    paid, total = len(proposal.executed_hashes), len(proposal.prepared_txs)
+    return [
+        key for key, signed in proposal.signatures.items()
+        if signed and len(signed) == total and all(signed[paid:])
+    ]
 
 
 def next_unsigned_index(proposal, party):
-    """The first prepared payout this party hasn't signed yet, or None."""
+    """The first unpaid prepared payout this party hasn't signed yet, or None."""
     mine = proposal.signatures.get(str(party.pk)) or []
-    for index in range(len(proposal.prepared_txs)):
+    for index in range(len(proposal.executed_hashes), len(proposal.prepared_txs)):
         if index >= len(mine) or not mine[index]:
             return index
     return None
@@ -543,7 +547,19 @@ CANCELLABLE = (S.PENDING_ACCEPTANCE, S.DRAFT, S.SETTLEMENT_READY)
 
 
 def cancel(lease, message, kind="cancelled"):
-    """Close an agreement before the deposit is locked. -> True when this call cancelled it."""
+    """Close an agreement before the deposit is locked. -> True when this call cancelled it.
+
+    Takes the lease's lock (InvalidTransition 'busy' if another action is running).
+    """
+    with _exclusive(lease):
+        return _cancel(lease, message, kind)
+
+
+def _cancel(lease, message, kind):
+    """cancel() for callers that already hold the lease's lock."""
+    lease.refresh_from_db()
+    if lease.status == S.SETTLEMENT_READY and _adopt_escrow_from_ledger(lease):
+        return False  # the tenant locked the deposit meanwhile: too late to cancel
     for status in CANCELLABLE:
         if _advance(lease, status, S.CANCELLED, error=message):
             record(lease, kind, message)
@@ -559,13 +575,18 @@ def bot_pass():
     pending = Lease.objects.filter(status=S.PENDING_ACCEPTANCE).select_related(*related)
     active = Lease.objects.filter(status=S.ACTIVE, escrow_sequence__isnull=False).select_related(*related)
     unlocked = Lease.objects.filter(status=S.SETTLEMENT_READY).select_related(*related)
-    if not pending.exists() and not active.exists() and not unlocked.exists():
+    cancelled = (
+        Lease.objects.filter(status=S.CANCELLED, tenant__isnull=False).exclude(settlement_address="")
+        .exclude(events__kind="returned").select_related(*related)
+    )
+    if not (pending.exists() or active.exists() or unlocked.exists() or cancelled.exists()):
         return []
     now = services.ledger_close_time()
     due = lambda lease: now > lease.cancel_after + services.CANCEL_SAFETY  # noqa: E731
     results = []
     # Both lists are read before anything changes, so a lease is handled once per pass.
-    for step, leases in ((_expire_pending, list(pending)), (_expire_unlocked, list(unlocked)), (_return_or_reconcile, list(active))):
+    for step, leases in ((_expire_pending, list(pending)), (_expire_unlocked, list(unlocked)), (_return_or_reconcile, list(active)),
+                        (_return_cancelled, list(cancelled))):
         for lease in [lease for lease in leases if due(lease)]:
             try:
                 with _exclusive(lease):
@@ -582,7 +603,7 @@ def bot_pass():
 def _expire_pending(lease):
     """An agreement nobody finished accepting before its return date can never start."""
     message = "Not everyone accepted before the automatic return date, so this agreement can no longer start."
-    return {"action": "cancelled_pending" if cancel(lease, message, "expired") else "skipped"}
+    return {"action": "cancelled_pending" if _cancel(lease, message, "expired") else "skipped"}
 
 
 def _expire_unlocked(lease):
@@ -596,6 +617,29 @@ def _expire_unlocked(lease):
     if _advance(lease, S.SETTLEMENT_READY, S.FAILED, error=message):
         record(lease, "failed", message)
     return {"action": "expired_unlocked"}
+
+
+def _return_cancelled(lease):
+    """Safety net: a deposit locked after the lease was cancelled still goes back to the tenant."""
+    lease.refresh_from_db()
+    if lease.status != S.CANCELLED or lease.events.filter(kind="returned").exists():
+        return {"action": "skipped"}
+    if lease.escrow_sequence is None:
+        tx_hash = services.find_escrow_create_hash(lease.tenant.address, lease.settlement_address, lease.condition_hex)
+        if not tx_hash:
+            return {"action": "skipped"}
+        found = services.get_transaction(tx_hash)
+        if verify_escrow_create_tx(lease, found):
+            return {"action": "skipped"}
+        tx = found["tx"]
+        lease.escrow_owner = tx["Account"]
+        lease.escrow_sequence = int(tx.get("Sequence") or tx.get("TicketSequence"))
+        lease.save(update_fields=["escrow_owner", "escrow_sequence"])
+    if services.get_escrow(lease.escrow_owner, lease.escrow_sequence) is None:
+        return {"action": "skipped"}
+    tx_hash = services.cancel_escrow(platform_wallet("bot"), lease.escrow_owner, lease.escrow_sequence, lease.cancel_after)
+    record(lease, "returned", f"Deposit locked after cancellation returned to {lease.tenant.label}", tx_hash)
+    return {"action": "returned_after_cancel", "tx_hash": tx_hash}
 
 
 def _return_or_reconcile(lease):
