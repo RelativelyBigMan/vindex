@@ -34,22 +34,32 @@ function renderIdentity(me) {
 function askName() {
   const dialog = document.querySelector("[data-name-dialog]");
   if (!dialog?.showModal || dialog.open) return;
-  const form = dialog.querySelector("[data-name-form]");
+  dialog.showModal();
+}
+
+function initNameDialog() {
+  const dialog = document.querySelector("[data-name-dialog]");
+  const form = dialog?.querySelector("[data-name-form]");
+  if (!form) return;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const name = form.elements.display_name.value.trim();
     if (!name) return;
     try {
       await post("/api/me/", { display_name: name });
-      dialog.close();
-      await loadMe(true);
-    } catch { /* shown by api.js */ }
-  }, { once: true });
-  dialog.showModal();
+    } catch { return; /* shown by api.js; keep the dialog open */ }
+    dialog.close();
+    await loadMe(true).catch(() => {});
+  });
 }
 
 /** Same-site paths only: one leading "/", never "//host" or "/\host". */
-const safeNext = (next) => typeof next === "string" && next.startsWith("/") && next[1] !== "/" && next[1] !== "\\";
+const safeNext = (next) => {
+  if (typeof next !== "string" || !next.startsWith("/") || next[1] === "/" || next[1] === "\\") return false;
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f\x7f]/.test(next)) return false;
+  try { return new URL(next, location.origin).origin === location.origin; } catch { return false; }
+};
 
 export async function startSignIn(button) {
   await busy(button, "Waiting for Xaman…", async () => {
@@ -112,6 +122,7 @@ function initAmountInputs() {
 function init() {
   document.querySelector("[data-signin]")?.addEventListener("click", (event) => startSignIn(event.currentTarget));
   document.querySelector("[data-signout]")?.addEventListener("click", () => signOut().catch(() => {}));
+  initNameDialog();
   onMe(renderIdentity);
   initCopy();
   initConfirm();

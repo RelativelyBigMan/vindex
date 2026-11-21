@@ -47,7 +47,7 @@ export async function uploadEvidence(leaseId, form) {
 }
 
 export async function anchorEvidence(item) {
-  await signWithXaman(() => post(`/api/evidence/${item.id}/anchor/`), { title: "Anchor the photo" });
+  await signWithXaman(() => post(`/api/evidence/${item.id}/anchor/`, {}, { quiet: true }), { title: "Anchor the photo" });
 }
 
 /**
