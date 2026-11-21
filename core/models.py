@@ -227,6 +227,7 @@ class XamanRequest(models.Model):
     class Status(models.TextChoices):
         OPEN = "open", "Waiting for Xaman"
         SIGNED = "signed", "Signed, finishing"
+        FINISHING = "finishing", "Finishing"
         DONE = "done", "Done"
         REJECTED = "rejected", "Rejected in Xaman"
         EXPIRED = "expired", "Expired"
@@ -247,6 +248,7 @@ class XamanRequest(models.Model):
     error = models.CharField(max_length=300, blank=True)
     result = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    signed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

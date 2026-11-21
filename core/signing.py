@@ -6,10 +6,10 @@ purpose (register the validated transaction, store the multisignature, create th
 """
 import logging
 import re
+from datetime import timedelta
 
 from django.core.cache import cache
 from django.utils import timezone
-from datetime import timedelta
 from xrpl.core.addresscodec import is_valid_classic_address
 
 from ledger import services, xaman
@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 P = XamanRequest.Purpose
 R = XamanRequest.Status
 VALIDATION_TIMEOUT = timedelta(minutes=3)
+TRANSIENT = {"network_error", "unknown"}  # connection problems: retry on the next poll
 WALLET_FILLS = ("Sequence", "Fee", "LastLedgerSequence", "SigningPubKey", "TxnSignature")
 
 
@@ -91,29 +92,54 @@ def start_trustline(party, currency):
 
 # ---- refresh and finish ----
 
+def _timed_out(req):
+    return timezone.now() - (req.signed_at or req.created_at) > VALIDATION_TIMEOUT
+
+
 def refresh(req):
     if req.status == R.OPEN:
         info = xaman.get_payload(req.xaman_uuid)
         if info["status"] == "open":
             return req
         if info["status"] in (R.REJECTED, R.EXPIRED):
-            req.status = info["status"]
-            req.save(update_fields=["status"])
+            XamanRequest.objects.filter(pk=req.pk, status=R.OPEN).update(status=info["status"])
+            req.refresh_from_db()
             return req
-        req.result, req.status = info, R.SIGNED
-        req.save(update_fields=["result", "status"])
-        if req.party_id and info.get("user_token"):
-            Party.objects.filter(pk=req.party_id).update(xaman_user_token=info["user_token"])
-    if req.status == R.SIGNED:
-        try:
-            finished = FINISHERS[req.purpose](req)
-        except (InvalidInput, InvalidTransition, LedgerError) as exc:
-            req.status, req.error = R.FAILED, exc.message[:300]
-            req.save(update_fields=["status", "error"])
+        token = info.get("user_token")
+        stored = {k: v for k, v in info.items() if k != "user_token"}  # the push token lives on Party only
+        won = XamanRequest.objects.filter(pk=req.pk, status=R.OPEN).update(status=R.SIGNED, result=stored, signed_at=timezone.now())
+        if won and req.party_id and token:
+            Party.objects.filter(pk=req.party_id).update(xaman_user_token=token)
+        req.refresh_from_db()
+    if req.status != R.SIGNED:
+        return req
+    if not XamanRequest.objects.filter(pk=req.pk, status=R.SIGNED).update(status=R.FINISHING):
+        req.refresh_from_db()  # another poll is finishing it
+        return req
+    req.status = R.FINISHING
+    try:
+        finished = FINISHERS[req.purpose](req)
+    except LedgerError as exc:
+        if exc.engine_result in TRANSIENT and not _timed_out(req):
+            XamanRequest.objects.filter(pk=req.pk, status=R.FINISHING).update(status=R.SIGNED)
+            req.status = R.SIGNED
             return req
-        if finished:
-            req.status = R.DONE
-            req.save(update_fields=["status", "party"])
+        return _fail(req, exc)
+    except (InvalidInput, InvalidTransition) as exc:
+        return _fail(req, exc)
+    if finished:
+        req.status = R.DONE
+        req.save(update_fields=["status", "party"])
+    else:
+        XamanRequest.objects.filter(pk=req.pk, status=R.FINISHING).update(status=R.SIGNED)
+        req.status = R.SIGNED
+    return req
+
+
+def _fail(req, exc):
+    log.info("Xaman request %s (%s) failed: %s", req.pk, req.purpose, exc)
+    req.status, req.error = R.FAILED, exc.message[:300]
+    req.save(update_fields=["status", "error"])
     return req
 
 
@@ -127,7 +153,7 @@ def _validated(req):
         if found.get("result") != "tesSUCCESS":
             raise InvalidInput(f"The transaction failed on the ledger ({found.get('result')}).", "tx_failed")
         return txid
-    if timezone.now() - req.created_at > VALIDATION_TIMEOUT:
+    if _timed_out(req):
         raise InvalidInput("The network never validated the transaction. Try again.", "not_validated")
     return None
 
@@ -137,7 +163,7 @@ def _finish_signin(req):
     if not is_valid_classic_address(address):
         raise InvalidInput("Xaman didn't report a valid account.", "bad_address")
     party, _ = Party.objects.get_or_create(address=address)
-    token = req.result.get("user_token")
+    token = xaman.get_payload(req.xaman_uuid).get("user_token")  # not kept in req.result
     if token and party.xaman_user_token != token:
         party.xaman_user_token = token
         party.save(update_fields=["xaman_user_token"])

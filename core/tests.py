@@ -718,10 +718,12 @@ class SigningTests(LedgerMockedTestCase):
         self.assertEqual((options["submit"], options["multisign"], options["signers"]), (False, True, [self.landlord.address]))
         self.signed(hex="BLOB0")
         self.assertEqual(signing.refresh(req).status, "done")
+        proposal.refresh_from_db()  # refresh() works on its own copy of the proposal
         req = signing.start_payout(proposal, self.landlord)
         self.assertEqual(req.payload_index, 1)
         self.signed(hex="BLOB1")
         signing.refresh(req)
+        proposal.refresh_from_db()
         self.assertIsNone(signing.start_payout(proposal, self.landlord))
 
     def test_a_failed_finish_is_reported_not_raised(self):
@@ -739,3 +741,71 @@ class SigningTests(LedgerMockedTestCase):
         data = signing.present(signing.start_signin())
         self.assertEqual(set(data), {"request_id", "purpose", "status", "error", "qr", "deeplink", "pushed"})
         self.assertTrue(data["qr"].startswith("data:image/svg+xml"))
+
+    def _escrow_request(self):
+        from . import signing
+        lease = self.make_lease(S.SETTLEMENT_READY)
+        self.ledger.build_escrow_create.return_value = {"TransactionType": "EscrowCreate", "Account": self.tenant.address}
+        return signing.start_escrow(lease, self.tenant)
+
+    def test_a_request_already_being_finished_is_left_alone(self):
+        from . import signing
+        from .models import XamanRequest
+        req = self._escrow_request()
+        XamanRequest.objects.filter(pk=req.pk).update(status="finishing", result={"txid": "AB" * 32})
+        req.refresh_from_db()
+        with mock.patch.dict(signing.FINISHERS, {signing.P.ESCROW_CREATE: mock.Mock()}) as _:
+            finisher = signing.FINISHERS[signing.P.ESCROW_CREATE]
+            self.assertEqual(signing.refresh(req).status, "finishing")
+            finisher.assert_not_called()
+        req.refresh_from_db()
+        self.assertEqual((req.status, req.error), ("finishing", ""))
+
+    def test_a_transient_ledger_error_keeps_the_request_signed(self):
+        from . import signing
+        req = self._escrow_request()
+        self.signed(txid="AB" * 32)
+        self.ledger.get_transaction.side_effect = LedgerError("network_error", "Can't reach the network.")
+        self.assertEqual(signing.refresh(req).status, "signed")
+        req.refresh_from_db()
+        self.assertEqual((req.status, req.error), ("signed", ""))
+        self.ledger.get_transaction.side_effect = None
+        self.ledger.get_transaction.return_value = {"validated": True, "result": "tesSUCCESS", "tx": {}}
+        with mock.patch.object(lifecycle, "register_wallet_escrow"):
+            self.assertEqual(signing.refresh(req).status, "done")
+
+    def test_a_transient_error_after_the_timeout_fails(self):
+        from . import signing
+        from datetime import timedelta
+        from django.utils import timezone
+        req = self._escrow_request()
+        self.signed(txid="AB" * 32)
+        self.ledger.get_transaction.side_effect = LedgerError("network_error", "Can't reach the network.")
+        signing.refresh(req)
+        req.signed_at = timezone.now() - signing.VALIDATION_TIMEOUT - timedelta(seconds=1)
+        req.save(update_fields=["signed_at"])
+        self.assertEqual(signing.refresh(req).status, "failed")
+
+    def test_the_validation_timeout_counts_from_when_it_was_signed(self):
+        from . import signing
+        from datetime import timedelta
+        from django.utils import timezone
+        from .models import XamanRequest
+        req = self._escrow_request()
+        XamanRequest.objects.filter(pk=req.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        req.refresh_from_db()
+        self.signed(txid="AB" * 32)
+        self.ledger.get_transaction.return_value = None
+        req = signing.refresh(req)
+        self.assertEqual((req.status, req.error), ("signed", ""))
+        self.assertIsNotNone(req.signed_at)
+
+    def test_the_push_token_is_not_kept_in_the_result(self):
+        from . import signing
+        req = signing.start_signin()
+        self.signed(account=Wallet.create().address, user_token="tok")
+        req = signing.refresh(req)
+        req.refresh_from_db()
+        self.assertEqual(req.status, "done")
+        self.assertNotIn("user_token", req.result)
+        self.assertEqual(req.party.xaman_user_token, "tok")
